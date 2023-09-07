@@ -65,6 +65,37 @@ def getNerfppNorm(cam_info):
 
     return {"translate": translate, "radius": radius}
 
+def readMySceneCameras(cam_extrinsics_files, cam_intrinsic, images_folder):
+    cam_infos = []
+    for idx, cam_extrinsics_file in enumerate(cam_extrinsics_files):
+        sys.stdout.write('\r')
+        # the exact output you're looking for:
+        sys.stdout.write("Reading camera {}/{}".format(idx+1, len(cam_extrinsics_files)))
+        sys.stdout.flush()
+
+        extr = np.loadtxt(cam_extrinsics_file)
+        intr = cam_intrinsic
+
+        uid = idx
+        R = extr[:3, :3].T
+        T = extr[:3, 3]
+
+        image_path = os.path.join(images_folder, f"{idx}.png")
+        image_name = f"{idx}"
+        image = Image.open(image_path)
+        width , height = image.size
+
+        focal_length_x = intr[0, 0]
+        focal_length_y = intr[1, 1]
+        FovY = focal2fov(focal_length_y, height)
+        FovX = focal2fov(focal_length_x, width)
+        
+        cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image, ## 这里图像已经加载进来了
+                              image_path=image_path, image_name=image_name, width=width, height=height)
+        cam_infos.append(cam_info)
+    sys.stdout.write('\n')
+    return cam_infos
+
 def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
     cam_infos = []
     for idx, key in enumerate(cam_extrinsics):
@@ -128,6 +159,88 @@ def storePly(path, xyz, rgb):
     vertex_element = PlyElement.describe(elements, 'vertex')
     ply_data = PlyData([vertex_element])
     ply_data.write(path)
+
+def readMySceneInfo(path, resolution = 40, llffhold=8): ## for onepose dataset
+    def read_intrinsic_data(intrinsic_path: str) -> np.ndarray:
+        with open(intrinsic_path, 'r') as file:
+            data = file.readlines()
+        ## handle intrinsics.txt
+        intrinsic_dict = {}
+        for item in data:
+            name, value = item.split(":")
+            intrinsic_dict[name] = float(value.strip())
+        intrinsic = np.array([
+            [intrinsic_dict["fx"], 0, intrinsic_dict["cx"]], 
+            [0, intrinsic_dict["fy"], intrinsic_dict["cy"]], 
+            [0, 0, 1]])
+        return intrinsic
+    
+    def generate_random_xyz_and_rgb(bounding_box_path, resolution):
+        def sample_points_from_bounding_box(points, resolution):
+                # 定义6个面
+                faces = [
+                    [points[0], points[1], points[2], points[3]],
+                    [points[4], points[5], points[6], points[7]],
+                    [points[0], points[1], points[5], points[4]],
+                    [points[1], points[2], points[6], points[5]],
+                    [points[2], points[3], points[7], points[6]],
+                    [points[3], points[0], points[4], points[7]]
+                ]
+                total_sample_points = []
+                # 进行采样
+                for face in faces:
+                    for i in np.linspace(0, 1, resolution):
+                        for j in np.linspace(0, 1, resolution):
+                            # 计算采样点的坐标
+                            sample_point = (
+                                (1 - i) * (1 - j) * np.array(face[0]) +
+                                i * (1 - j) * np.array(face[1]) +
+                                i * j * np.array(face[2]) +
+                                (1 - i) * j * np.array(face[3])
+                            )
+                            total_sample_points.append(sample_point)
+                return np.array(total_sample_points)
+        bounding_box = np.loadtxt(bounding_box_path)
+        xyz = sample_points_from_bounding_box(bounding_box, resolution)
+        rgb = np.random.random((xyz.shape[0], 3))
+        return xyz, rgb
+    
+    cam_extrinsics_root = Path(path) / "poses_ba"
+    cam_extrinsics_files = cam_extrinsics_root.glob("*.txt")
+    cam_extrinsics_files = sorted(cam_extrinsics_files, key=lambda x: int(x.stem))
+    cam_intrinsics_path = Path(path) / "intrinsics.txt"
+    image_path = Path(path) / "input"
+    cam_intrinsic = read_intrinsic_data(str(cam_intrinsics_path))
+    cam_infos = readMySceneCameras(cam_extrinsics_files=cam_extrinsics_files, cam_intrinsic=cam_intrinsic, images_folder=str(image_path))
+
+    if eval:
+        train_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold != 0]
+        test_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold == 0]
+    else:
+        train_cam_infos = cam_infos
+        test_cam_infos = []
+
+    nerf_normalization = getNerfppNorm(train_cam_infos)
+
+    ply_path = os.path.join(path, "sparse/0/points3D.ply")
+    bounding_box_path = os.path.join(path, "box3d_corners.txt")
+    os.makedirs(os.path.dirname(ply_path), exist_ok=True)
+
+    if not os.path.exists(ply_path):
+        print("random generate point cloud from the bounding box, will happen only the first time you open the scene.")
+        xyz, rgb, = generate_random_xyz_and_rgb(bounding_box_path, resolution)
+        storePly(ply_path, xyz, rgb)
+    try:
+        pcd = fetchPly(ply_path)
+    except:
+        pcd = None
+
+    scene_info = SceneInfo(point_cloud=pcd,
+                           train_cameras=train_cam_infos,
+                           test_cameras=test_cam_infos,
+                           nerf_normalization=nerf_normalization,
+                           ply_path=ply_path)
+    return scene_info
 
 def readColmapSceneInfo(path, images, eval, llffhold=8):
     try:
@@ -256,5 +369,6 @@ def readNerfSyntheticInfo(path, white_background, eval, extension=".png"):
 
 sceneLoadTypeCallbacks = {
     "Colmap": readColmapSceneInfo,
-    "Blender" : readNerfSyntheticInfo
+    "Blender" : readNerfSyntheticInfo,
+    "MyScene" : readMySceneInfo
 }

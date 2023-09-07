@@ -68,6 +68,10 @@ class PipelineParams(ParamGroup):
         self.debug = False
         super().__init__(parser, "Pipeline Parameters")
 
+class MyParams(ParamGroup):
+    def __init__(self, parser):
+        self.use_bounding_box = False
+
 class OptimizationParams(ParamGroup):
     def __init__(self, parser):
         self.iterations = 30_000
