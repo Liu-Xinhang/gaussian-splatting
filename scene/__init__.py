@@ -31,7 +31,7 @@ class Scene:
         self.gaussians = gaussians
 
         if load_iteration:
-            if load_iteration == -1:
+            if load_iteration == -1:  ## 加载训练好的场景，如果是-1，那么就是最新的场景
                 self.loaded_iter = searchForMaxIteration(os.path.join(self.model_path, "point_cloud"))
             else:
                 self.loaded_iter = load_iteration
@@ -50,7 +50,7 @@ class Scene:
 
         if not self.loaded_iter:
             with open(scene_info.ply_path, 'rb') as src_file, open(os.path.join(self.model_path, "input.ply") , 'wb') as dest_file:
-                dest_file.write(src_file.read())
+                dest_file.write(src_file.read()) ## 拷贝一个文件
             json_cams = []
             camlist = []
             if scene_info.test_cameras:
@@ -74,7 +74,7 @@ class Scene:
             print("Loading Test Cameras")
             self.test_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.test_cameras, resolution_scale, args)
 
-        if self.loaded_iter:
+        if self.loaded_iter: ## Todo 
             self.gaussians.load_ply(os.path.join(self.model_path,
                                                            "point_cloud",
                                                            "iteration_" + str(self.loaded_iter),

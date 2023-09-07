@@ -22,7 +22,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     Background tensor (bg_color) must be on GPU!
     """
  
-    # Create zero tensor. We will use it to make pytorch return gradients of the 2D (screen-space) means
+    # Create zero tensor. We will use it to make pytorch return gradients of the 2D (screen-space) means ##todo how to do this
     screenspace_points = torch.zeros_like(pc.get_xyz, dtype=pc.get_xyz.dtype, requires_grad=True, device="cuda") + 0
     try:
         screenspace_points.retain_grad()
@@ -33,7 +33,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     tanfovx = math.tan(viewpoint_camera.FoVx * 0.5)
     tanfovy = math.tan(viewpoint_camera.FoVy * 0.5)
 
-    raster_settings = GaussianRasterizationSettings(
+    raster_settings = GaussianRasterizationSettings( ## 送到gpu中的内容
         image_height=int(viewpoint_camera.image_height),
         image_width=int(viewpoint_camera.image_width),
         tanfovx=tanfovx,
@@ -70,7 +70,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     shs = None
     colors_precomp = None
     if override_color is None:
-        if pipe.convert_SHs_python:
+        if pipe.convert_SHs_python: ## False
             shs_view = pc.get_features.transpose(1, 2).view(-1, 3, (pc.max_sh_degree+1)**2)
             dir_pp = (pc.get_xyz - viewpoint_camera.camera_center.repeat(pc.get_features.shape[0], 1))
             dir_pp_normalized = dir_pp/dir_pp.norm(dim=1, keepdim=True)

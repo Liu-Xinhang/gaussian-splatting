@@ -21,7 +21,7 @@ from simple_knn._C import distCUDA2
 from utils.graphics_utils import BasicPointCloud
 from utils.general_utils import strip_symmetric, build_scaling_rotation
 
-class GaussianModel:
+class GaussianModel: ## 这个类存储的就是3d gaussian
 
     def setup_functions(self):
         def build_covariance_from_scaling_rotation(scaling, scaling_modifier, rotation):
@@ -92,7 +92,7 @@ class GaussianModel:
         self.denom = denom
         self.optimizer.load_state_dict(opt_dict)
 
-    @property
+    @property ## 只读属性
     def get_scaling(self):
         return self.scaling_activation(self._scaling)
     
@@ -151,7 +151,7 @@ class GaussianModel:
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
 
-        l = [
+        l = [ ## 这个应该是Adam优化器可以识别的格式
             {'params': [self._xyz], 'lr': training_args.position_lr_init * self.spatial_lr_scale, "name": "xyz"},
             {'params': [self._features_dc], 'lr': training_args.feature_lr, "name": "f_dc"},
             {'params': [self._features_rest], 'lr': training_args.feature_lr / 20.0, "name": "f_rest"},
@@ -261,7 +261,7 @@ class GaussianModel:
             if group["name"] == name:
                 stored_state = self.optimizer.state.get(group['params'][0], None)
                 stored_state["exp_avg"] = torch.zeros_like(tensor)
-                stored_state["exp_avg_sq"] = torch.zeros_like(tensor)
+                stored_state["exp_avg_sq"] = torch.zeros_like(tensor) ## step 保持不变
 
                 del self.optimizer.state[group['params'][0]]
                 group["params"][0] = nn.Parameter(tensor.requires_grad_(True))
@@ -360,7 +360,7 @@ class GaussianModel:
         samples = torch.normal(mean=means, std=stds)
         rots = build_rotation(self._rotation[selected_pts_mask]).repeat(N,1,1)
         new_xyz = torch.bmm(rots, samples.unsqueeze(-1)).squeeze(-1) + self.get_xyz[selected_pts_mask].repeat(N, 1)
-        new_scaling = self.scaling_inverse_activation(self.get_scaling[selected_pts_mask].repeat(N,1) / (0.8*N))
+        new_scaling = self.scaling_inverse_activation(self.get_scaling[selected_pts_mask].repeat(N,1) / (0.8*N)) ## 这里的0.8是一个经验值
         new_rotation = self._rotation[selected_pts_mask].repeat(N,1)
         new_features_dc = self._features_dc[selected_pts_mask].repeat(N,1,1)
         new_features_rest = self._features_rest[selected_pts_mask].repeat(N,1,1)
@@ -369,7 +369,7 @@ class GaussianModel:
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation)
 
         prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
-        self.prune_points(prune_filter)
+        self.prune_points(prune_filter) ## 这里是根据grad和区域大小来进行prune
 
     def densify_and_clone(self, grads, grad_threshold, scene_extent):
         # Extract points that satisfy the gradient condition
@@ -390,7 +390,7 @@ class GaussianModel:
         grads = self.xyz_gradient_accum / self.denom
         grads[grads.isnan()] = 0.0
 
-        self.densify_and_clone(grads, max_grad, extent)
+        self.densify_and_clone(grads, max_grad, extent) ## 注意必须先clone再split
         self.densify_and_split(grads, max_grad, extent)
 
         prune_mask = (self.get_opacity < min_opacity).squeeze()
@@ -398,7 +398,7 @@ class GaussianModel:
             big_points_vs = self.max_radii2D > max_screen_size
             big_points_ws = self.get_scaling.max(dim=1).values > 0.1 * extent
             prune_mask = torch.logical_or(torch.logical_or(prune_mask, big_points_vs), big_points_ws)
-        self.prune_points(prune_mask)
+        self.prune_points(prune_mask) ## 这里是根据opacity以及区域大小来prune
 
         torch.cuda.empty_cache()
 

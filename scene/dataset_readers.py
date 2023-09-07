@@ -42,8 +42,8 @@ class SceneInfo(NamedTuple):
     nerf_normalization: dict
     ply_path: str
 
-def getNerfppNorm(cam_info):
-    def get_center_and_diag(cam_centers):
+def getNerfppNorm(cam_info): 
+    def get_center_and_diag(cam_centers): ##Todo 这是在干什么
         cam_centers = np.hstack(cam_centers)
         avg_cam_center = np.mean(cam_centers, axis=1, keepdims=True)
         center = avg_cam_center
@@ -85,7 +85,7 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
         if intr.model=="SIMPLE_PINHOLE":
             focal_length_x = intr.params[0]
             FovY = focal2fov(focal_length_x, height)
-            FovX = focal2fov(focal_length_x, width)
+            FovX = focal2fov(focal_length_x, width) ## 视场角
         elif intr.model=="PINHOLE":
             focal_length_x = intr.params[0]
             focal_length_y = intr.params[1]
@@ -98,7 +98,7 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
         image_name = os.path.basename(image_path).split(".")[0]
         image = Image.open(image_path)
 
-        cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
+        cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image, ## 这里图像已经加载进来了
                               image_path=image_path, image_name=image_name, width=width, height=height)
         cam_infos.append(cam_info)
     sys.stdout.write('\n')

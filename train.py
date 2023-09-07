@@ -32,7 +32,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree)
-    scene = Scene(dataset, gaussians)
+    scene = Scene(dataset, gaussians) ##Todo analysis this
     gaussians.training_setup(opt)
     if checkpoint:
         (model_params, first_iter) = torch.load(checkpoint)
@@ -41,8 +41,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 
-    iter_start = torch.cuda.Event(enable_timing = True)
-    iter_end = torch.cuda.Event(enable_timing = True)
+    iter_start = torch.cuda.Event(enable_timing = True) ## 记录gpu时间
+    iter_end = torch.cuda.Event(enable_timing = True) ## 记录gpu时间
 
     viewpoint_stack = None
     ema_loss_for_log = 0.0
@@ -74,7 +74,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         # Pick a random Camera
         if not viewpoint_stack:
-            viewpoint_stack = scene.getTrainCameras().copy()
+            viewpoint_stack = scene.getTrainCameras().copy() ## 每次迭代的时候，就会删去一个，当删去完成之后，就又会初始化一次
         viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
 
         # Render
@@ -114,6 +114,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
                 if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
                     size_threshold = 20 if iteration > opt.opacity_reset_interval else None
+                    ## 我们会根据梯度，不透明度，camera的extent以及size的大小来决定保留哪些内容
                     gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold)
                 
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
