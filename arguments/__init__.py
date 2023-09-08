@@ -71,6 +71,10 @@ class PipelineParams(ParamGroup):
 class MyParams(ParamGroup):
     def __init__(self, parser):
         self.use_bounding_box = False
+        self.crop_by_bounding_box = False
+        self.crop_by_mask = False
+        self.volume_init = False
+        super().__init__(parser, "My Parameters")
 
 class OptimizationParams(ParamGroup):
     def __init__(self, parser):

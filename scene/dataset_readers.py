@@ -11,8 +11,8 @@
 
 import os
 import sys
-from PIL import Image
-from typing import NamedTuple
+from PIL import Image, ImageDraw
+from typing import NamedTuple, Union, Sequence
 from scene.colmap_loader import read_extrinsics_text, read_intrinsics_text, qvec2rotmat, \
     read_extrinsics_binary, read_intrinsics_binary, read_points3D_binary, read_points3D_text
 from utils.graphics_utils import getWorld2View2, focal2fov, fov2focal
@@ -65,7 +65,43 @@ def getNerfppNorm(cam_info):
 
     return {"translate": translate, "radius": radius}
 
-def readMySceneCameras(cam_extrinsics_files, cam_intrinsic, images_folder):
+def readMySceneCameras(cam_extrinsics_files, cam_intrinsic, images_folder:Path, crop_by_bounding_box=False, crop_by_mask=False):
+    def project_points(pose, points, intrinsic):
+        points = np.concatenate((points, np.ones((points.shape[0], 1))), -1).T # 4, N
+        points2d = intrinsic @ pose @ points
+        points2d = points2d[:2] / points2d[2]
+        return points2d.T
+
+    def get_2d_bounding_box(bounding_box_3d):
+        left, top = np.min(bounding_box_3d, axis=0)
+        right, bottom = np.max(bounding_box_3d, axis=0)
+        return np.array([left, top, right, bottom], dtype=np.int32)
+    
+    def remove_background_by_bounding_box(img, bounding_box_2d):
+        # 创建一个ImageDraw对象
+        draw = ImageDraw.Draw(img)
+        # 定义矩形框的坐标(左上角(x0, y0)和右下角(x1, y1))
+        width, height = img.size
+        x0, y0, x1, y1 = bounding_box_2d
+        # 在黑色图片上绘制一个白色的矩形
+        # draw.rectangle([x0, y0, x1, y1], fill='white')
+        draw.rectangle([0, 0, width, y0], fill='black') # 上方区域
+        draw.rectangle([0, y1, width, height], fill='black') # 下方区域
+        draw.rectangle([0, y0, x0, y1], fill='black') # 左侧区域
+        draw.rectangle([x1, y0, width, y1], fill='black') # 右侧区域
+        return img
+    
+    def remove_background_by_mask(img, mask):
+        img = np.array(img)
+        img[~mask] = 0
+        return Image.fromarray(img)
+
+    ## 加载点，为crop_by_boundingbox 做准备
+    corners = np.loadtxt(images_folder.parent / "box3d_corners.txt")
+    ## 加载mask，为crop_by_mask 做准备
+    total_mask_paths = (images_folder.parent / "mask").glob("*.npy")
+    total_mask_paths = sorted(total_mask_paths, key=lambda x: int(x.stem))
+
     cam_infos = []
     for idx, cam_extrinsics_file in enumerate(cam_extrinsics_files):
         sys.stdout.write('\r')
@@ -73,16 +109,25 @@ def readMySceneCameras(cam_extrinsics_files, cam_intrinsic, images_folder):
         sys.stdout.write("Reading camera {}/{}".format(idx+1, len(cam_extrinsics_files)))
         sys.stdout.flush()
 
-        extr = np.loadtxt(cam_extrinsics_file)
+        extr = np.loadtxt(cam_extrinsics_file)[:3]
         intr = cam_intrinsic
 
         uid = idx
         R = extr[:3, :3].T
         T = extr[:3, 3]
 
-        image_path = os.path.join(images_folder, f"{idx}.png")
+        image_path = images_folder / f"{idx}.png"
         image_name = f"{idx}"
         image = Image.open(image_path)
+
+        if crop_by_bounding_box:
+            points2d = project_points(extr, corners, intr)
+            bounding_box_2d = get_2d_bounding_box(points2d)
+            image = remove_background_by_bounding_box(image, bounding_box_2d)
+        elif crop_by_mask:
+            mask = np.load(total_mask_paths[idx])
+            assert idx == int(total_mask_paths[idx].stem), "mask file name is not consistent with the camera index"
+            image = remove_background_by_mask(image, mask)
         width , height = image.size
 
         focal_length_x = intr[0, 0]
@@ -160,7 +205,7 @@ def storePly(path, xyz, rgb):
     ply_data = PlyData([vertex_element])
     ply_data.write(path)
 
-def readMySceneInfo(path, resolution = 40, llffhold=8): ## for onepose dataset
+def readMySceneInfo(path, resolution=[40, 80, 40], llffhold=8, crop_by_bounding_box=False, crop_by_mask=False, volume_init=False): ## for onepose dataset
     def read_intrinsic_data(intrinsic_path: str) -> np.ndarray:
         with open(intrinsic_path, 'r') as file:
             data = file.readlines()
@@ -175,33 +220,50 @@ def readMySceneInfo(path, resolution = 40, llffhold=8): ## for onepose dataset
             [0, 0, 1]])
         return intrinsic
     
-    def generate_random_xyz_and_rgb(bounding_box_path, resolution):
-        def sample_points_from_bounding_box(points, resolution):
-                # 定义6个面
-                faces = [
-                    [points[0], points[1], points[2], points[3]],
-                    [points[4], points[5], points[6], points[7]],
-                    [points[0], points[1], points[5], points[4]],
-                    [points[1], points[2], points[6], points[5]],
-                    [points[2], points[3], points[7], points[6]],
-                    [points[3], points[0], points[4], points[7]]
-                ]
-                total_sample_points = []
-                # 进行采样
-                for face in faces:
-                    for i in np.linspace(0, 1, resolution):
-                        for j in np.linspace(0, 1, resolution):
-                            # 计算采样点的坐标
-                            sample_point = (
-                                (1 - i) * (1 - j) * np.array(face[0]) +
-                                i * (1 - j) * np.array(face[1]) +
-                                i * j * np.array(face[2]) +
-                                (1 - i) * j * np.array(face[3])
-                            )
-                            total_sample_points.append(sample_point)
-                return np.array(total_sample_points)
+    def generate_random_xyz_and_rgb(bounding_box_path, resolution: Union[int, Sequence[int]], volume_init=False):
+        def sample_points_from_volume(bounding_box: np.ndarray, resolution: Union[int, Sequence[int]]):
+            if isinstance(resolution, int):
+                resolution = [resolution, resolution, resolution]
+            assert len(resolution) == 3, "resolution must be a sequence of length 3"
+            x_min, y_min, z_min = bounding_box[0]
+            x_max, y_max, z_max = bounding_box[6]
+            x = np.linspace(x_min, x_max, resolution[0])
+            y = np.linspace(y_min, y_max, resolution[1])
+            z = np.linspace(z_min, z_max, resolution[2])
+            xx, yy, zz = np.meshgrid(x, y, z)
+            return np.vstack([xx.flatten(), yy.flatten(), zz.flatten()]).T
+        def sample_points_from_bounding_box(bounding_box: np.ndarray, resolution: Union[int, Sequence[int]]):
+            if isinstance(resolution, int):
+                resolution = [resolution, resolution, resolution]
+            assert len(resolution) == 3, "resolution must be a sequence of length 3"
+            # 定义6个面
+            faces = [
+                [bounding_box[0], bounding_box[1], bounding_box[2], bounding_box[3]],
+                [bounding_box[4], bounding_box[5], bounding_box[6], bounding_box[7]],
+                [bounding_box[0], bounding_box[1], bounding_box[5], bounding_box[4]],
+                [bounding_box[1], bounding_box[2], bounding_box[6], bounding_box[5]],
+                [bounding_box[2], bounding_box[3], bounding_box[7], bounding_box[6]],
+                [bounding_box[3], bounding_box[0], bounding_box[4], bounding_box[7]]
+            ]
+            total_sample_points = []
+            # 进行采样
+            for face in faces:
+                for i in np.linspace(0, 1, resolution):
+                    for j in np.linspace(0, 1, resolution):
+                        # 计算采样点的坐标
+                        sample_point = (
+                            (1 - i) * (1 - j) * np.array(face[0]) +
+                            i * (1 - j) * np.array(face[1]) +
+                            i * j * np.array(face[2]) +
+                            (1 - i) * j * np.array(face[3])
+                        )
+                        total_sample_points.append(sample_point)
+            return np.array(total_sample_points)
         bounding_box = np.loadtxt(bounding_box_path)
-        xyz = sample_points_from_bounding_box(bounding_box, resolution)
+        if volume_init:
+            xyz = sample_points_from_volume(bounding_box, resolution)
+        else:
+            xyz = sample_points_from_bounding_box(bounding_box, resolution)
         rgb = np.random.random((xyz.shape[0], 3))
         return xyz, rgb
     
@@ -211,7 +273,7 @@ def readMySceneInfo(path, resolution = 40, llffhold=8): ## for onepose dataset
     cam_intrinsics_path = Path(path) / "intrinsics.txt"
     image_path = Path(path) / "input"
     cam_intrinsic = read_intrinsic_data(str(cam_intrinsics_path))
-    cam_infos = readMySceneCameras(cam_extrinsics_files=cam_extrinsics_files, cam_intrinsic=cam_intrinsic, images_folder=str(image_path))
+    cam_infos = readMySceneCameras(cam_extrinsics_files=cam_extrinsics_files, cam_intrinsic=cam_intrinsic, images_folder=image_path, crop_by_bounding_box=crop_by_bounding_box, crop_by_mask=crop_by_mask)
 
     if eval:
         train_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold != 0]
@@ -226,9 +288,9 @@ def readMySceneInfo(path, resolution = 40, llffhold=8): ## for onepose dataset
     bounding_box_path = os.path.join(path, "box3d_corners.txt")
     os.makedirs(os.path.dirname(ply_path), exist_ok=True)
 
-    if not os.path.exists(ply_path):
+    if True or not os.path.exists(ply_path): ##!debug阶段每次都重新生成
         print("random generate point cloud from the bounding box, will happen only the first time you open the scene.")
-        xyz, rgb, = generate_random_xyz_and_rgb(bounding_box_path, resolution)
+        xyz, rgb, = generate_random_xyz_and_rgb(bounding_box_path, resolution, volume_init)
         storePly(ply_path, xyz, rgb)
     try:
         pcd = fetchPly(ply_path)

@@ -41,7 +41,7 @@ class Scene:
         self.train_cameras = {}
         self.test_cameras = {}
         if myparm is not None and myparm.use_bounding_box:
-            scene_info = sceneLoadTypeCallbacks["MyScene"](args.source_path, )
+            scene_info = sceneLoadTypeCallbacks["MyScene"](args.source_path, crop_by_bounding_box=myparm.crop_by_bounding_box, crop_by_mask=myparm.crop_by_mask, volume_init=myparm.volume_init)
         elif os.path.exists(os.path.join(args.source_path, "sparse")):
             scene_info = sceneLoadTypeCallbacks["Colmap"](args.source_path, args.images, args.eval)
         elif os.path.exists(os.path.join(args.source_path, "transforms_train.json")):
