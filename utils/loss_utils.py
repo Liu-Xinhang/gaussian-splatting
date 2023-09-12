@@ -61,4 +61,26 @@ def _ssim(img1, img2, window, window_size, channel, size_average=True):
         return ssim_map.mean()
     else:
         return ssim_map.mean(1).mean(1).mean(1)
+    
+def rigid(xyz, xyz_prev, R, R_prev, k=10):
+    loss = 0
+    for i in range(xyz.shape[0]):
+        loss += _rigid(xyz[i], xyz, R, xyz_prev[i], xyz_prev, R_prev, k) ##! 改成batch操作
+    return loss 
+
+def _rigid(xyz_i, xyz, R, xyz_prev_i, xyz_prev, R_prev, k=10):
+    ## 对于所有的gaussian点，随机选择k个点
+    """
+    p_i: 1, 3
+    xyz: N, 3
+    R_prev: 3, 3
+    R: 3, 3
+    """    
+    j_indices = torch.randint(0, xyz.shape[0], (k,)) #k,
+    xyz_j = xyz[j_indices] # k, 3
+    xyz_prev_j = xyz_prev[j_indices]
+
+    diff = (xyz_prev_j - xyz_prev_i) - (R_prev @ R.T @ (xyz_j - xyz_i).T).T # k, 3
+    return (diff ** 2).mean()
+
 

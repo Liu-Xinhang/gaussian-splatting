@@ -17,6 +17,7 @@ class Frame:
     corners = None
     root_path = None
     cam_intrinsic = None
+    gaussians = None
     
 
     def __init__(self, id: int, args : ModelParams, gaussians : GaussianModel, load_iteration=None, resolution_scales=[1.0], cameras_extent=None, myparms=None):
@@ -25,7 +26,6 @@ class Frame:
         """
         self.model_path = args.model_path
         self.loaded_iter = None
-        self.gaussians = None
         
         self.id = id
         self.resolution_scales = resolution_scales
@@ -37,20 +37,21 @@ class Frame:
             Frame.corners = np.loadtxt(Frame.root_path / "box3d_corners.txt")
         if Frame.cam_intrinsic is None:
             Frame.cam_intrinsic = read_intrinsic_data(Frame.root_path / "intrinsics.txt")
-
-        self.gaussians = gaussians
-        assert load_iteration is not None, "load_iteration must be specified"
-        if load_iteration == -1:  ## 加载训练好的场景，如果是-1，那么就是最新的场景
-            self.loaded_iter = searchForMaxIteration(os.path.join(self.model_path, "point_cloud"))
+        if Frame.gaussians is None:
+            Frame.gaussians = gaussians
+            assert load_iteration is not None, "load_iteration must be specified"
+            if load_iteration == -1:  ## 加载训练好的场景，如果是-1，那么就是最新的场景
+                self.loaded_iter = searchForMaxIteration(os.path.join(self.model_path, "point_cloud"))
+            else:
+                self.loaded_iter = load_iteration
+            print("Loading trained model at iteration {}".format(self.loaded_iter))
+            Frame.gaussians.load_ply(os.path.join(self.model_path,
+                                "point_cloud",
+                                "iteration_" + str(self.loaded_iter),
+                                "point_cloud.ply"))
         else:
-            self.loaded_iter = load_iteration
-        print("Loading trained model at iteration {}".format(self.loaded_iter))
-        self.gaussians.load_ply(os.path.join(self.model_path,
-                            "point_cloud",
-                            "iteration_" + str(self.loaded_iter),
-                            "point_cloud.ply"))
-
-
+            print("Gaussians already loaded, skipping")
+        Frame.gaussians.spatial_lr_scale = cameras_extent
         self.cameras_extent = cameras_extent
         camera = self._read_camera(
             Frame.root_path / f"poses_ba/{self.id}.txt",
@@ -92,31 +93,46 @@ class Frame:
                               image_path=image_path, image_name=image_name, width=width, height=height)
         return cam_info
     
-    def transform(self, resolution):
+    def transform(self, resolution, rotation=None, translation=None):
         """
-        assign the pose from the camera to the gaussian points
+        assign the pose from the camera to the gaussian points, if rotation and translation is None, we read the 
+        camera extrinsics as the object pose.
         """
         assert resolution in self.resolution_scales, "resolution must be in {}".format(self.resolution_scales)
         camera = self.cameras[resolution]
-        rotation = torch.from_numpy(camera.R.T).float().cuda()
-        translation = torch.from_numpy(camera.T).float().cuda()
-
+        if rotation is None:
+            rotation = torch.from_numpy(camera.R.T).float().cuda()
+        else:
+            rotation = rotation.float().cuda()
+        if translation is None:
+            translation = torch.from_numpy(camera.T).float().cuda()
+        else:
+            translation = translation.float().cuda()
+        
         camera.reset_transform(np.eye(3), np.zeros(3))
 
-        self.gaussians.assign_transform(rotation, translation)
-        return camera
+        Frame.gaussians.assign_transform(rotation, translation)
 
-    def get_camera(self, resolution):
+        return camera
+    
+    @property
+    def get_rotation_translation(self, resolution=1):
+        camera = self.cameras[resolution]
+        return torch.from_numpy(camera.R.T).float(), torch.from_numpy(camera.T).float()
+    
+    def get_camera(self, set_to_identity, resolution=1):
         """
         assign the pose from the camera to the gaussian points
         """
         assert resolution in self.resolution_scales, "resolution must be in {}".format(self.resolution_scales)
         camera = self.cameras[resolution]
+        if set_to_identity:
+            camera.reset_transform(np.eye(3), np.zeros(3))
         return camera
 
     def save(self, iteration):
         point_cloud_path = os.path.join(self.model_path, "point_cloud/iteration_{}".format(iteration))
-        self.gaussians.save_ply(os.path.join(point_cloud_path, "point_cloud.ply"))
+        Frame.gaussians.save_ply(os.path.join(point_cloud_path, "point_cloud.ply"))
 
     def getTrainCameras(self, scale=1.0):
         return self.cameras[scale]
