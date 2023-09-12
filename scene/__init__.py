@@ -19,6 +19,7 @@ from arguments import ModelParams
 from utils.camera_utils import cameraList_from_camInfos, camera_to_JSON
 from typing import Optional
 
+
 class Scene:
 
     gaussians : GaussianModel

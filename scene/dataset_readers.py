@@ -22,6 +22,8 @@ from pathlib import Path
 from plyfile import PlyData, PlyElement
 from utils.sh_utils import SH2RGB
 from scene.gaussian_model import BasicPointCloud
+from utils.read_utils import remove_background_by_bounding_box, remove_background_by_mask, \
+    get_2d_bounding_box, project_points, read_intrinsic_data
 
 class CameraInfo(NamedTuple):
     uid: int
@@ -41,6 +43,7 @@ class SceneInfo(NamedTuple):
     test_cameras: list
     nerf_normalization: dict
     ply_path: str
+
 
 def getNerfppNorm(cam_info): 
     def get_center_and_diag(cam_centers): ##Todo 这是在干什么
@@ -66,35 +69,6 @@ def getNerfppNorm(cam_info):
     return {"translate": translate, "radius": radius}
 
 def readMySceneCameras(cam_extrinsics_files, cam_intrinsic, images_folder:Path, crop_by_bounding_box=False, crop_by_mask=False):
-    def project_points(pose, points, intrinsic):
-        points = np.concatenate((points, np.ones((points.shape[0], 1))), -1).T # 4, N
-        points2d = intrinsic @ pose @ points
-        points2d = points2d[:2] / points2d[2]
-        return points2d.T
-
-    def get_2d_bounding_box(bounding_box_3d):
-        left, top = np.min(bounding_box_3d, axis=0)
-        right, bottom = np.max(bounding_box_3d, axis=0)
-        return np.array([left, top, right, bottom], dtype=np.int32)
-    
-    def remove_background_by_bounding_box(img, bounding_box_2d):
-        # 创建一个ImageDraw对象
-        draw = ImageDraw.Draw(img)
-        # 定义矩形框的坐标(左上角(x0, y0)和右下角(x1, y1))
-        width, height = img.size
-        x0, y0, x1, y1 = bounding_box_2d
-        # 在黑色图片上绘制一个白色的矩形
-        # draw.rectangle([x0, y0, x1, y1], fill='white')
-        draw.rectangle([0, 0, width, y0], fill='black') # 上方区域
-        draw.rectangle([0, y1, width, height], fill='black') # 下方区域
-        draw.rectangle([0, y0, x0, y1], fill='black') # 左侧区域
-        draw.rectangle([x1, y0, width, y1], fill='black') # 右侧区域
-        return img
-    
-    def remove_background_by_mask(img, mask):
-        img = np.array(img)
-        img[~mask] = 0
-        return Image.fromarray(img)
 
     ## 加载点，为crop_by_boundingbox 做准备
     corners = np.loadtxt(images_folder.parent / "box3d_corners.txt")
@@ -206,20 +180,6 @@ def storePly(path, xyz, rgb):
     ply_data.write(path)
 
 def readMySceneInfo(path, resolution=[40, 80, 40], llffhold=8, crop_by_bounding_box=False, crop_by_mask=False, volume_init=False): ## for onepose dataset
-    def read_intrinsic_data(intrinsic_path: str) -> np.ndarray:
-        with open(intrinsic_path, 'r') as file:
-            data = file.readlines()
-        ## handle intrinsics.txt
-        intrinsic_dict = {}
-        for item in data:
-            name, value = item.split(":")
-            intrinsic_dict[name] = float(value.strip())
-        intrinsic = np.array([
-            [intrinsic_dict["fx"], 0, intrinsic_dict["cx"]], 
-            [0, intrinsic_dict["fy"], intrinsic_dict["cy"]], 
-            [0, 0, 1]])
-        return intrinsic
-    
     def generate_random_xyz_and_rgb(bounding_box_path, resolution: Union[int, Sequence[int]], volume_init=False):
         def sample_points_from_volume(bounding_box: np.ndarray, resolution: Union[int, Sequence[int]]):
             if isinstance(resolution, int):

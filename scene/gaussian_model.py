@@ -19,6 +19,7 @@ from plyfile import PlyData, PlyElement
 from utils.sh_utils import RGB2SH
 from simple_knn._C import distCUDA2
 from utils.graphics_utils import BasicPointCloud
+from utils.pose_utils import matrix_to_quaternion, quaternion_to_matrix
 from utils.general_utils import strip_symmetric, build_scaling_rotation
 
 class GaussianModel: ## 这个类存储的就是3d gaussian
@@ -114,8 +115,16 @@ class GaussianModel: ## 这个类存储的就是3d gaussian
     def get_opacity(self):
         return self.opacity_activation(self._opacity)
     
+    @property
     def get_covariance(self, scaling_modifier = 1):
         return self.covariance_activation(self.get_scaling, scaling_modifier, self._rotation)
+
+    def assign_transform(self, rotation, translation):
+        rotation_matrix = quaternion_to_matrix(self.get_rotation)
+        _rotation = matrix_to_quaternion(rotation @ rotation_matrix)
+        _xyz = (rotation @ self._xyz.T).T + translation
+        self._xyz = nn.Parameter(torch.tensor(_xyz, dtype=torch.float, device="cuda").requires_grad_(True)).contiguous()
+        self._rotation = nn.Parameter(torch.tensor(_rotation, dtype=torch.float, device="cuda").requires_grad_(True)).contiguous()
 
     def oneupSHdegree(self):
         if self.active_sh_degree < self.max_sh_degree:
