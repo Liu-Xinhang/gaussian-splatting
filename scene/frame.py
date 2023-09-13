@@ -19,7 +19,6 @@ class Frame:
     cam_intrinsic = None
     gaussians = None
     
-
     def __init__(self, id: int, args : ModelParams, gaussians : GaussianModel, load_iteration=None, resolution_scales=[1.0], cameras_extent=None, myparms=None):
         """b
         :param path: Path to colmap scene main folder.
@@ -39,19 +38,9 @@ class Frame:
             Frame.cam_intrinsic = read_intrinsic_data(Frame.root_path / "intrinsics.txt")
         if Frame.gaussians is None:
             Frame.gaussians = gaussians
-            assert load_iteration is not None, "load_iteration must be specified"
-            if load_iteration == -1:  ## 加载训练好的场景，如果是-1，那么就是最新的场景
-                self.loaded_iter = searchForMaxIteration(os.path.join(self.model_path, "point_cloud"))
-            else:
-                self.loaded_iter = load_iteration
-            print("Loading trained model at iteration {}".format(self.loaded_iter))
-            Frame.gaussians.load_ply(os.path.join(self.model_path,
-                                "point_cloud",
-                                "iteration_" + str(self.loaded_iter),
-                                "point_cloud.ply"))
         else:
             print("Gaussians already loaded, skipping")
-        Frame.gaussians.spatial_lr_scale = cameras_extent
+        
         self.cameras_extent = cameras_extent
         camera = self._read_camera(
             Frame.root_path / f"poses_ba/{self.id}.txt",
@@ -69,7 +58,7 @@ class Frame:
         intr = Frame.cam_intrinsic
 
         uid = self.id
-        R = extr[:3, :3].T
+        R = extr[:3, :3].T ##! 这里将R进行了转置
         T = extr[:3, 3]
 
         image = Image.open(image_path)

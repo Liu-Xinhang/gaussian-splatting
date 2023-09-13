@@ -8,10 +8,23 @@ import torch
 import torchvision
 from pathlib import Path
 import tqdm
+import os
+from utils.system_utils import searchForMaxIteration
 
 def render_image(image_id, dataset, opt, pipe, load_iteration, myparms):
     gaussians = GaussianModel(dataset.sh_degree)
-
+    ## load gaussian
+    assert load_iteration is not None, "load_iteration must be specified"
+    if load_iteration == -1:  ## 加载训练好的场景，如果是-1，那么就是最新的场景
+        loaded_iter = searchForMaxIteration(os.path.join(dataset.model_path, "point_cloud"))
+    else:
+        loaded_iter = load_iteration
+    print("Loading trained model at iteration {}".format(loaded_iter))
+    gaussians.load_ply(os.path.join(dataset.model_path,
+                        "point_cloud",
+                        "iteration_" + str(loaded_iter),
+                        "point_cloud.ply"))
+    
     bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 

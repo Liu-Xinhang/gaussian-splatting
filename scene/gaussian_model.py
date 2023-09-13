@@ -144,19 +144,23 @@ class GaussianModel: ## 这个类存储的就是3d gaussian
     def assign_transform(self, rotation, translation):
         rotation_matrix = quaternion_to_matrix(self.get_init_rotation)
         self._rotation = matrix_to_quaternion(rotation @ rotation_matrix).detach()
-        # self._rotation.requires_grad_(True)
         self._xyz = ((rotation @ self.get_init_xyz.T).T + translation).detach()
-        # self._xyz.requires_grad_(True)
-        # self._xyz = nn.Parameter(torch.tensor(_xyz, dtype=torch.float, device="cuda").requires_grad_(True)).contiguous()
-        # self._rotation = nn.Parameter(torch.tensor(_rotation, dtype=torch.float, device="cuda").requires_grad_(True)).contiguous()
     
+    def refresh_transform(self, use_inertia=False):
+        self._rotation_bak = self._rotation.detach().clone()
+        self._xyz_bak = self._xyz.detach().clone()
+
+        if not use_inertia:
+            self._delta_rotation = torch.tensor([[1, 0, 0, 0]], dtype=torch.float32, device="cuda", requires_grad=True)
+            self._delta_translation = torch.zeros((1, 3), dtype=torch.float32, device="cuda", requires_grad=True)
+
     def assign_transform_from_delta_pose(self):
         rotation_matrix = quaternion_to_matrix(self.get_init_rotation) # N, 3, 3
         delta_rotation_matrix = quaternion_to_matrix(self.get_delta_rotation) # 1, 3, 3
         self._rotation = matrix_to_quaternion(delta_rotation_matrix @ rotation_matrix) # N, 4
         self._xyz = (delta_rotation_matrix[0] @ self.get_init_xyz.T).T + self.get_delta_translation
-        self._xyz.retain_grad()
-        self._rotation.retain_grad()
+        # self._xyz.retain_grad()
+        # self._rotation.retain_grad()
 
     def oneupSHdegree(self):
         if self.active_sh_degree < self.max_sh_degree:
@@ -206,7 +210,18 @@ class GaussianModel: ## 这个类存储的就是3d gaussian
                                                     lr_final=training_args.position_lr_final*self.spatial_lr_scale,
                                                     lr_delay_mult=training_args.position_lr_delay_mult,
                                                     max_steps=training_args.position_lr_max_steps)
-    
+    def set_optimizer(self, eval_args):
+        l = [ ## 这个应该是Adam优化器可以识别的格式
+            {'params': [self._delta_translation], 'lr': eval_args.position_lr_init * self.spatial_lr_scale, "name": "delta_translation"},
+            {'params': [self._delta_rotation], 'lr': eval_args.rotation_lr, "name": "delta_rotation"}
+        ]
+
+        self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
+        self.xyz_scheduler_args = get_expon_lr_func(lr_init=eval_args.position_lr_init*self.spatial_lr_scale,
+                                                    lr_final=eval_args.position_lr_final*self.spatial_lr_scale,
+                                                    lr_delay_mult=eval_args.position_lr_delay_mult,
+                                                    max_steps=eval_args.position_lr_max_steps)
+        
     def eval_setup(self, eval_args, rotation=None, translation=None):
         self.percent_dense = eval_args.percent_dense
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
@@ -222,16 +237,8 @@ class GaussianModel: ## 这个类存储的就是3d gaussian
             self._delta_translation = translation.reshape(1, 3).float().cuda().requires_grad_(True)
         
 
-        l = [ ## 这个应该是Adam优化器可以识别的格式
-            {'params': [self._delta_translation], 'lr': eval_args.position_lr_init * self.spatial_lr_scale, "name": "delta_translation"},
-            {'params': [self._delta_rotation], 'lr': eval_args.rotation_lr, "name": "delta_rotation"}
-        ]
-
-        self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
-        self.xyz_scheduler_args = get_expon_lr_func(lr_init=eval_args.position_lr_init*self.spatial_lr_scale,
-                                                    lr_final=eval_args.position_lr_final*self.spatial_lr_scale,
-                                                    lr_delay_mult=eval_args.position_lr_delay_mult,
-                                                    max_steps=eval_args.position_lr_max_steps)
+        self.set_optimizer(eval_args)
+        
         self._fix_parameter()
 
     def update_learning_rate(self, iteration):
@@ -331,9 +338,8 @@ class GaussianModel: ## 这个类存储的就是3d gaussian
         self._features_rest.requires_grad_(False)
         self._opacity.requires_grad_(False)
         self._scaling.requires_grad_(False)
-        
-        self._xyz.requires_grad_(False)
-        self._rotation.requires_grad_(False)
+        # self._xyz.requires_grad_(False)
+        # self._rotation.requires_grad_(False)
             
     def replace_tensor_to_optimizer(self, tensor, name):
         optimizable_tensors = {}
