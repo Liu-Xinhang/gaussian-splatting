@@ -39,7 +39,7 @@ def eval(image_id, dataset, opt, pipe, load_iteration, myparms, init_translation
 
     rotation, translation = frame.get_rotation_translation
     rotation = matrix_to_quaternion(rotation)
-    Frame.gaussians.eval_setup(opt, init_rotation, translation)
+    Frame.gaussians.eval_setup(opt, init_rotation, init_translation)
     
     viewpoint_cam = frame.get_camera(set_to_identity=True)
     gt_image = viewpoint_cam.original_image.cuda()
@@ -78,7 +78,7 @@ if __name__ == "__main__":
     args = parser.parse_args(sys.argv[1:])
     
 
-    init_pose = np.loadtxt("temp_datasets/loquat-2/poses_ba/22.txt")
+    init_pose = np.loadtxt("temp_datasets/loquat-2/poses_ba/100.txt")
     init_translation = torch.from_numpy(init_pose[:3, 3])
     init_rotation = matrix_to_quaternion(torch.from_numpy(init_pose[:3, :3]))
 

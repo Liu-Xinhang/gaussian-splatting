@@ -74,6 +74,10 @@ class MyParams(ParamGroup):
         self.crop_by_bounding_box = False
         self.crop_by_mask = False
         self.volume_init = False
+        
+        ## track
+        self.track_render_iterations = 100
+
         super().__init__(parser, "My Parameters")
 
 class OptimizationParams(ParamGroup):
