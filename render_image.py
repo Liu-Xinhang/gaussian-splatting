@@ -36,7 +36,7 @@ def render_image(image_id, dataset, opt, pipe, load_iteration, myparms):
     image_ = render_pkg["render"]
 
     viewpoint_cam = frame.transform(1)
-
+    pipe.convert_SHs_python = True
     render_pkg = render(viewpoint_cam, Frame.gaussians, pipe, background)
 
     image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
@@ -60,7 +60,7 @@ if __name__ == "__main__":
     parser.add_argument('--debug_from', type=int, default=-1)
     args = parser.parse_args(sys.argv[1:])
     
-    for image_id in tqdm.trange(737):
+    for image_id in tqdm.trange(109):
         render_image(image_id, lp.extract(args), op.extract(args), pp.extract(args), args.load_iteration, mp.extract(args))
 
     

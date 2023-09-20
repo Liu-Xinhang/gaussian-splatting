@@ -9,7 +9,7 @@ from pathlib import Path
 
 parser = argparse.ArgumentParser()
 parser.add_argument('-s', '--exp_save_root', default=".", type=str, help='视频保存路径')
-parser.add_argument('--file_dir', default="debug_track_200", type=str,  help='包含图像的文件夹')
+parser.add_argument('--file_dir', default="debug_render", type=str,  help='包含图像的文件夹')
 parser.add_argument('--max_frame', default=-1, type=int, help='最大帧数')
 opt = parser.parse_args()
 

@@ -39,7 +39,7 @@ def eval(image_id, dataset, opt, pipe, load_iteration, myparms, init_translation
 
     rotation, translation = frame.get_rotation_translation
     rotation = matrix_to_quaternion(rotation)
-    Frame.gaussians.eval_setup(opt, init_rotation, init_translation)
+    Frame.gaussians.eval_setup(opt, rotation, init_translation)
     
     viewpoint_cam = frame.get_camera(set_to_identity=True)
     gt_image = viewpoint_cam.original_image.cuda()
@@ -64,7 +64,7 @@ def eval(image_id, dataset, opt, pipe, load_iteration, myparms, init_translation
 
             Frame.gaussians.optimizer.step()
             Frame.gaussians.optimizer.zero_grad(set_to_none = True)
-            if i == 999 or i % 100 == 0:
+            if i == 999 or i % 10 == 0:
                 torchvision.utils.save_image(image, save_dir / f"{i}_render.png")
 
 

@@ -55,6 +55,7 @@ class Camera(nn.Module):
         self.projection_matrix = getProjectionMatrix(znear=self.znear, zfar=self.zfar, fovX=self.FoVx, fovY=self.FoVy).transpose(0,1).cuda()
         self.full_proj_transform = (self.world_view_transform.unsqueeze(0).bmm(self.projection_matrix.unsqueeze(0))).squeeze(0)
         self.camera_center = self.world_view_transform.inverse()[3, :3]
+        self.camera_center_origin = self.camera_center ## 计算球谐函数用
     
     def reset_transform(self, R, T):
         self.R = R
