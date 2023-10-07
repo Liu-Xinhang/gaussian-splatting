@@ -39,6 +39,8 @@ class DegreeAndCM():
 			trans_distance /= 10
 			if self._seperate_axis:
 				trans_distance_l1 /= 10
+		elif translation_scale == "cm":
+			pass
 		else:
 			raise NotImplementedError("The translation scale is not implemented.")
 

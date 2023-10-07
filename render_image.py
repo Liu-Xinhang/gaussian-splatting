@@ -1,6 +1,6 @@
 from argparse import ArgumentParser, Namespace
 from scene import GaussianModel
-from scene.frame import Frame
+from scene.frame import OneposeFrame, NeRFFrame
 import sys
 from arguments import ModelParams, OptimizationParams, MyParams, PipelineParams
 from gaussian_renderer import render
@@ -28,21 +28,26 @@ def render_image(image_id, dataset, opt, pipe, load_iteration, myparms):
     bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 
-    frame = Frame(image_id, dataset, gaussians, load_iteration, cameras_extent=0.5027918756008148, myparms=myparms)
+    if myparms.mytype=="Onepose":
+        frame = OneposeFrame(image_id, dataset, gaussians, load_iteration, cameras_extent=0.5027918756008148, myparms=myparms)
+    elif myparms.mytype=="Nerf":
+        frame = NeRFFrame(image_id, dataset, gaussians, myparms=myparms)
+    else:
+        raise NotImplementedError
 
     viewpoint_cam = frame.get_camera(set_to_identity=False) ## 先渲染一个把位姿作用在相机视角上的版本
-    Frame.gaussians.reset_transform()
-    render_pkg = render(viewpoint_cam, Frame.gaussians, pipe, background)
+    gaussians.reset_transform()
+    render_pkg = render(viewpoint_cam, gaussians, pipe, background)
     image_ = render_pkg["render"]
 
     viewpoint_cam = frame.transform(1)
     pipe.convert_SHs_python = True
-    render_pkg = render(viewpoint_cam, Frame.gaussians, pipe, background)
+    render_pkg = render(viewpoint_cam, gaussians, pipe, background)
 
     image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
     gt_image = viewpoint_cam.original_image
 
-    save_dir = Path("debug")
+    save_dir = Path("debug_NeRF")
     save_dir.mkdir(exist_ok=True)
 
     torchvision.utils.save_image(image, save_dir / f"{image_id}_render.png")
@@ -60,7 +65,7 @@ if __name__ == "__main__":
     parser.add_argument('--debug_from', type=int, default=-1)
     args = parser.parse_args(sys.argv[1:])
     
-    for image_id in tqdm.trange(109):
+    for image_id in tqdm.trange(1):
         render_image(image_id, lp.extract(args), op.extract(args), pp.extract(args), args.load_iteration, mp.extract(args))
 
     

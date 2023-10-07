@@ -1,6 +1,6 @@
 from argparse import ArgumentParser, Namespace
 from scene import GaussianModel
-from scene.frame import Frame
+from scene.frame import OneposeFrame
 import sys
 from arguments import ModelParams, OptimizationParams, MyParams, PipelineParams
 from gaussian_renderer import render
@@ -17,7 +17,7 @@ from utils.system_utils import searchForMaxIteration
 from utils.eval_utils import DegreeAndCM
 
 ## 暂时设置一个全局的变量
-BUNDLE_ADJUSTMENT = True
+BUNDLE_ADJUSTMENT = False 
 
 def eval(dataset, opt, pipe, load_iteration, myparms, init_translation, init_rotation):
     gaussians = GaussianModel(dataset.sh_degree)
@@ -59,22 +59,28 @@ def eval(dataset, opt, pipe, load_iteration, myparms, init_translation, init_rot
     iter_start = torch.cuda.Event(enable_timing = True) ## 记录gpu时间
     iter_end = torch.cuda.Event(enable_timing = True) ## 记录gpu时间
     
+    make_density = False
+    refresh_start_iter = -20
     for image_id, image_path in enumerate(total_images_path):
         start_time = time.time()
         print(f"eval {str(image_path)}")
         gaussians.refresh_transform(use_inertia=True, bundle=BUNDLE_ADJUSTMENT)
         gaussians.set_optimizer(opt)  ##! 因为学习率不会发生变化，所以这里我们就直接全部更新了
 
-        if BUNDLE_ADJUSTMENT and image_id % 4 == 0: ##! 设置啥会儿去更新
-            ## 如果我们要使用bundle 的 densify，我们先要保存之前的结果，这样相当于我们已经完成gaussian的增加了
-            gaussians.move_new_guassian_to_old()
-            
+        if BUNDLE_ADJUSTMENT and image_id - refresh_start_iter == 20:
+            gaussians.move_new_guassian_to_old(opt)
+        
+        if BUNDLE_ADJUSTMENT and make_density: ##! 设置啥会儿去更新
+            print("densify and prune")
+            make_density = False
+            refresh_start_iter = image_id
+            ## 如果我们要使用bundle 的 densify，我们先要保存之前的结果，这样相当于我们已经完成gaussian的增加了   
             size_threshold = 20
             ## 我们会根据梯度，不透明度，camera的extent以及size的大小来决定保留哪些内容
             # gaussians.densify_and_prune(0.0001, 0.005, 0.5027918756008148, size_threshold, bundle=BUNDLE_ADJUSTMENT) ##!
             gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, 0.5027918756008148, size_threshold, bundle=BUNDLE_ADJUSTMENT)
 
-        frame = Frame(image_id, dataset, gaussians, load_iteration, cameras_extent=0.5027918756008148, myparms=myparms)
+        frame = OneposeFrame(image_id, dataset, gaussians, load_iteration, cameras_extent=0.5027918756008148, myparms=myparms)
 
         gt_rotation, gt_translation = frame.get_rotation_translation 
         gt_pose = torch.concat((gt_rotation, gt_translation.unsqueeze(-1)), -1).cpu().numpy()
@@ -92,13 +98,13 @@ def eval(dataset, opt, pipe, load_iteration, myparms, init_translation, init_rot
             pipe.convert_SHs_python = not BUNDLE_ADJUSTMENT ## 颜色根据原始的方向计算好球谐函数中的内容, ##! 目前如果我们加入bundle adjustment后，就无法同时保存之前的方向了，所以这里我们就不计算了
             render_pkg = render(viewpoint_cam, gaussians, pipe, background)
             image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
-            
-            # torchvision.utils.save_image(image, save_dir / f"{image_id}_render_{i:02d}.png")
 
             Ll1 = l1_loss(image, gt_image)
             image_loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
 
             image_loss.backward()
+            if image_loss.item() > 0.01 and image_id - refresh_start_iter > 20:
+                make_density = True
 
             with torch.no_grad():
                 progress_bar.set_description(f"loss: {image_loss.item():.4f}")
@@ -120,6 +126,7 @@ def eval(dataset, opt, pipe, load_iteration, myparms, init_translation, init_rot
                     pred_rotation = delta_rotation @ init_rotation
                     pred_translation = (delta_rotation @ init_translation.T).T + delta_translation
                     pred_pose = torch.concat([pred_rotation, pred_translation.T], -1).cpu().numpy()
+                    np.savetxt(save_dir / f"{image_id}_pred.txt", pred_pose)
                     init_rotation = pred_rotation
                     init_translation = pred_translation
                     evler.update(gt_pose, pred_pose)
@@ -129,9 +136,9 @@ def eval(dataset, opt, pipe, load_iteration, myparms, init_translation, init_rot
                     end_time = time.time()
                     # print(f"cost time: {end_time - start_time}")
 
-    degree, cm = evler.get_total_degree_and_cm()
-    np.save(save_dir / f"{myparms.track_render_iterations}_degree.npy", degree)
-    np.save(save_dir / f"{myparms.track_render_iterations}_cm.npy", cm)
+                    degree, cm = evler.get_total_degree_and_cm()
+                    np.save(save_dir / f"{myparms.track_render_iterations}_degree.npy", degree)
+                    np.save(save_dir / f"{myparms.track_render_iterations}_cm.npy", cm)
         
 
 if __name__ == "__main__":

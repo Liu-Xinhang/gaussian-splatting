@@ -68,7 +68,8 @@ def getNerfppNorm(cam_info):
 
     return {"translate": translate, "radius": radius}
 
-def readMySceneCameras(cam_extrinsics_files, cam_intrinsic, images_folder:Path, crop_by_bounding_box=False, crop_by_mask=False):
+
+def readOneposeCameras(cam_extrinsics_files, cam_intrinsic, images_folder:Path, crop_by_bounding_box=False, crop_by_mask=False):
 
     ## 加载点，为crop_by_boundingbox 做准备
     corners = np.loadtxt(images_folder.parent / "box3d_corners.txt")
@@ -178,8 +179,8 @@ def storePly(path, xyz, rgb):
     vertex_element = PlyElement.describe(elements, 'vertex')
     ply_data = PlyData([vertex_element])
     ply_data.write(path)
-
-def readMySceneInfo(path, resolution=[40, 80, 40], llffhold=8, crop_by_bounding_box=False, crop_by_mask=False, volume_init=False): ## for onepose dataset
+    
+def readOneposeInfo(path, resolution=[40, 80, 40], llffhold=8, crop_by_bounding_box=False, crop_by_mask=False, volume_init=False): ## for onepose dataset
     def generate_random_xyz_and_rgb(bounding_box_path, resolution: Union[int, Sequence[int]], volume_init=False):
         def sample_points_from_volume(bounding_box: np.ndarray, resolution: Union[int, Sequence[int]]):
             if isinstance(resolution, int):
@@ -233,7 +234,7 @@ def readMySceneInfo(path, resolution=[40, 80, 40], llffhold=8, crop_by_bounding_
     cam_intrinsics_path = Path(path) / "intrinsics.txt"
     image_path = Path(path) / "input"
     cam_intrinsic = read_intrinsic_data(str(cam_intrinsics_path))
-    cam_infos = readMySceneCameras(cam_extrinsics_files=cam_extrinsics_files, cam_intrinsic=cam_intrinsic, images_folder=image_path, crop_by_bounding_box=crop_by_bounding_box, crop_by_mask=crop_by_mask)
+    cam_infos = readOneposeCameras(cam_extrinsics_files=cam_extrinsics_files, cam_intrinsic=cam_intrinsic, images_folder=image_path, crop_by_bounding_box=crop_by_bounding_box, crop_by_mask=crop_by_mask)
 
     if eval:
         train_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold != 0]
@@ -392,5 +393,5 @@ def readNerfSyntheticInfo(path, white_background, eval, extension=".png"):
 sceneLoadTypeCallbacks = {
     "Colmap": readColmapSceneInfo,
     "Blender" : readNerfSyntheticInfo,
-    "MyScene" : readMySceneInfo
+    "Onepose" : readOneposeInfo
 }

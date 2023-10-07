@@ -51,7 +51,7 @@ class ModelParams(ParamGroup):
         self._model_path = ""
         self._images = "images"
         self._resolution = -1
-        self._white_background = False
+        self._white_background = True
         self.data_device = "cuda"
         self.eval = False
         super().__init__(parser, "Loading Parameters", sentinel)
@@ -70,20 +70,22 @@ class PipelineParams(ParamGroup):
 
 class MyParams(ParamGroup):
     def __init__(self, parser):
-        self.use_bounding_box = False
+        self.mytype = 'Onepose'
         self.crop_by_bounding_box = False
         self.crop_by_mask = False
         self.volume_init = False
         
         ## track
         self.track_render_iterations = 100
+        self.track_densification_interval = 100
 
         super().__init__(parser, "My Parameters")
 
 class OptimizationParams(ParamGroup):
     def __init__(self, parser):
         self.iterations = 30_000
-        self.position_lr_init = 0.00016
+        # self.position_lr_init = 0.00016
+        self.position_lr_init = 0.016 ## for eval
         self.position_lr_final = 0.0000016
         self.position_lr_delay_mult = 0.01
         self.position_lr_max_steps = 30_000

@@ -64,7 +64,7 @@ class GaussianModel: ## 这个类存储的就是3d gaussian
         self.denom = torch.empty(0)
         self.optimizer = None
         self.percent_dense = 0
-        self.spatial_lr_scale = 0
+        self.spatial_lr_scale = None
         self.setup_functions()
 
     def capture(self):
@@ -101,6 +101,14 @@ class GaussianModel: ## 这个类存储的就是3d gaussian
         self.denom = denom
         self.optimizer.load_state_dict(opt_dict)
 
+    @property
+    def get_new_scaling(self):
+        return self.scaling_activation(self._new_scaling)
+    
+    @property
+    def get_init_scaling(self):
+        return self.scaling_activation(self._scaling_bak)
+    
     @property ## 只读属性
     def get_scaling(self):
         return self.scaling_activation(self._scaling)
@@ -138,6 +146,14 @@ class GaussianModel: ## 这个类存储的就是3d gaussian
         features_dc = self._features_dc
         features_rest = self._features_rest
         return torch.cat((features_dc, features_rest), dim=1)
+    
+    @property
+    def get_init_opacity(self):
+        return self.opacity_activation(self._opacity_bak)
+
+    @property
+    def get_new_opacity(self):
+        return self.opacity_activation(self._new_opacity)
     
     @property
     def get_opacity(self):
@@ -267,10 +283,10 @@ class GaussianModel: ## 这个类存储的就是3d gaussian
                                                     max_steps=training_args.position_lr_max_steps)
     def set_optimizer(self, eval_args):
         l = [ ## 这个应该是Adam优化器可以识别的格式
-            {'params': [self._delta_translation], 'lr': eval_args.position_lr_init * self.spatial_lr_scale, "name": "delta_translation"},
+            {'params': [self._delta_translation], 'lr': eval_args.position_lr_init, "name": "delta_translation"},
             {'params': [self._delta_rotation], 'lr': eval_args.rotation_lr, "name": "delta_rotation"},
             
-            {'params': [self._new_xyz], 'lr': eval_args.position_lr_init * self.spatial_lr_scale, "name": "_new_xyz"},
+            {'params': [self._new_xyz], 'lr': eval_args.position_lr_init, "name": "_new_xyz"},
             {'params': [self._new_features_dc], 'lr': eval_args.feature_lr, "name": "_new_f_dc"},
             {'params': [self._new_features_rest], 'lr': eval_args.feature_lr / 20.0, "name": "_new_f_rest"},
             {'params': [self._new_opacity], 'lr': eval_args.opacity_lr, "name": "_new_opacity"},
@@ -356,29 +372,32 @@ class GaussianModel: ## 这个类存储的就是3d gaussian
         el = PlyElement.describe(elements, 'vertex')
         PlyData([el]).write(path)
 
-    def move_new_guassian_to_old(self):
-        self._xyz_bak = torch.cat((self._xyz_bak, self._new_xyz), dim=0)
-        self._rotation_bak = torch.cat((self._rotation_bak, self._new_rotation), dim=0)
-        self._features_dc_bak = torch.cat((self._features_dc_bak, self._new_features_dc), dim=0)
-        self._features_rest_bak = torch.cat((self._features_rest_bak, self._new_features_rest), dim=0)
-        self._scaling_bak = torch.cat((self._scaling_bak, self._new_scaling), dim=0)
-        self._opacity_bak = torch.cat((self._opacity_bak, self._new_opacity), dim=0)
+    def move_new_guassian_to_old(self, eval_args):
+        ## 这里要detach因为我们的newxyz是有梯度的，但是这里我们希望从此他就不要有梯度了
+        self._xyz_bak = torch.cat((self._xyz_bak, self._new_xyz), dim=0).detach()
+        self._rotation_bak = torch.cat((self._rotation_bak, self._new_rotation), dim=0).detach()
+        self._features_dc_bak = torch.cat((self._features_dc_bak, self._new_features_dc), dim=0).detach()
+        self._features_rest_bak = torch.cat((self._features_rest_bak, self._new_features_rest), dim=0).detach()
+        self._scaling_bak = torch.cat((self._scaling_bak, self._new_scaling), dim=0).detach()
+        self._opacity_bak = torch.cat((self._opacity_bak, self._new_opacity), dim=0).detach()
+
+        self.reset_new(eval_args)
         
-    def reset_new(self):
+    def reset_new(self, eval_args):
+        self._new_xyz = torch.empty(0, *self._xyz.shape[1:], device="cuda")
+        self._new_features_dc = torch.empty(0, *self._features_dc.shape[1:], device="cuda")
+        self._new_features_rest = torch.empty(0, *self._features_rest.shape[1:], device="cuda")
+        self._new_scaling = torch.empty(0, *self._scaling.shape[1:], device="cuda")
+        self._new_rotation = torch.empty(0, *self._rotation.shape[1:], device="cuda")
+        self._new_opacity = torch.empty(0, *self._opacity.shape[1:], device="cuda") 
 
-        new_xyz = torch.empty(0, *self._xyz.shape[1:], device="cuda")
-        new_features_dc = torch.empty(0, *self._features_dc.shape[1:], device="cuda")
-        new_features_rest = torch.empty(0, *self._features_rest.shape[1:], device="cuda")
-        new_scaling = torch.empty(0, *self._scaling.shape[1:], device="cuda")
-        new_rotation = torch.empty(0, *self._rotation.shape[1:], device="cuda")
-        new_opacity = torch.empty(0, *self._opacity.shape[1:], device="cuda") 
-
-        self._new_xyz = self.replace_tensor_to_optimizer(new_xyz, "_new_xyz")["_new_xyz"]
-        self._new_rotation = self.replace_tensor_to_optimizer(new_rotation, "_new_rotation")["_new_rotation"]
-        self._new_features_dc = self.replace_tensor_to_optimizer(new_features_dc, "_new_f_dc")["_new_f_dc"]
-        self._new_features_rest = self.replace_tensor_to_optimizer(new_features_rest, "_new_f_rest")["_new_f_rest"]
-        self._new_scaling = self.replace_tensor_to_optimizer(new_scaling, "_new_scaling")["_new_scaling"]
-        self._new_opacity = self.replace_tensor_to_optimizer(new_opacity, "_new_opacity")["_new_opacity"]
+        # self._new_xyz = self.replace_tensor_to_optimizer(new_xyz, "_new_xyz")["_new_xyz"]
+        # self._new_rotation = self.replace_tensor_to_optimizer(new_rotation, "_new_rotation")["_new_rotation"]
+        # self._new_features_dc = self.replace_tensor_to_optimizer(new_features_dc, "_new_f_dc")["_new_f_dc"]
+        # self._new_features_rest = self.replace_tensor_to_optimizer(new_features_rest, "_new_f_rest")["_new_f_rest"]
+        # self._new_scaling = self.replace_tensor_to_optimizer(new_scaling, "_new_scaling")["_new_scaling"]
+        # self._new_opacity = self.replace_tensor_to_optimizer(new_opacity, "_new_opacity")["_new_opacity"]
+        self.set_optimizer(eval_args)
 
 
     def reset_opacity(self):
@@ -559,24 +578,17 @@ class GaussianModel: ## 这个类存储的就是3d gaussian
         "rotation" : new_rotation}
         if bundle:
             optimizable_tensors, rows_to_concat = self.cat_tensors_to_optimzer_bundle(d)
-            if "xyz" in optimizable_tensors:
-                # self._xyz_bak = torch.concat((self._xyz_bak, optimizable_tensors["xyz"][-rows_to_concat["xyz"]:]), dim=0)
-                # self._rotation_bak = torch.concat((self._rotation_bak, optimizable_tensors["rotation"][-rows_to_concat["rotation"]:]), dim=0)
-                # self._features_dc = torch.concat((self._features_dc, optimizable_tensors["f_dc"][-rows_to_concat["f_dc"]:]), dim=0)
-                # self._features_rest = torch.concat((self._features_rest, optimizable_tensors["f_rest"][-rows_to_concat["f_rest"]:]), dim=0)
-                # self._opacity = torch.concat((self._opacity, optimizable_tensors["opacity"][-rows_to_concat["opacity"]:]), dim=0)
-                # self._scaling = torch.concat((self._scaling, optimizable_tensors["scaling"][-rows_to_concat["scaling"]:]), dim=0)
-                
+            if "xyz" in optimizable_tensors:    
                 self._new_xyz = optimizable_tensors["xyz"]
                 self._new_features_dc = optimizable_tensors["f_dc"]
                 self._new_features_rest = optimizable_tensors["f_rest"]
                 self._new_opacity = optimizable_tensors["opacity"]
                 self._new_scaling = optimizable_tensors["scaling"]
                 self._new_rotation = optimizable_tensors["rotation"]
-                shape = self.get_opacity.shape[0] + self._new_xyz.shape[0]
-                self.xyz_gradient_accum = torch.zeros((shape, 1), device="cuda")
-                self.denom = torch.zeros((shape, 1), device="cuda")
-                self.max_radii2D = torch.zeros((shape), device="cuda")
+            shape = self._opacity_bak.shape[0] + self._new_xyz.shape[0]
+            self.xyz_gradient_accum = torch.zeros((shape, 1), device="cuda")
+            self.denom = torch.zeros((shape, 1), device="cuda")
+            self.max_radii2D = torch.zeros((shape), device="cuda")
         else:
             optimizable_tensors = self.cat_tensors_to_optimizer(d)
             self._xyz = optimizable_tensors["xyz"]
@@ -680,55 +692,52 @@ class GaussianModel: ## 这个类存储的就是3d gaussian
         self.densify_and_clone(grads, max_grad, extent, bundle=bundle) ## 注意必须先clone再split
         if not bundle:
             self.densify_and_split(grads, max_grad, extent, bundle=bundle) ## bundle的时候暂时不要delete点了
-        else:  ## 暂时不要prune了
-            return
-
-        prune_mask = (self.get_opacity < min_opacity).squeeze()
+        
+        if bundle:
+            _opacity = torch.cat((self.get_init_opacity, self.get_new_opacity))
+            prune_mask = (_opacity < min_opacity).squeeze()
+        else:
+            prune_mask = (self.get_opacity < min_opacity).squeeze()
         if max_screen_size:
             big_points_vs = self.max_radii2D > max_screen_size
-            big_points_ws = self.get_scaling.max(dim=1).values > 0.1 * extent
+            if bundle:
+                _scaling = torch.cat((self.get_init_scaling, self.get_new_scaling))
+                big_points_ws = _scaling.max(dim=1).values > 0.1 * extent
+            else:
+                big_points_ws = self.get_scaling.max(dim=1).values > 0.1 * extent
             prune_mask = torch.logical_or(torch.logical_or(prune_mask, big_points_vs), big_points_ws)
         if not bundle:
             self.prune_points(prune_mask) ## 这里是根据opacity以及区域大小来prune
         else:
             ## 更新的原理就是我们新增加的量都在最后
-            ## 获取到底新增加了多少的椭球
-            self.xyz_gradient_accum = self.xyz_gradient_accum[~prune_mask]
+            valid_points_mask = ~prune_mask
+            self.xyz_gradient_accum = self.xyz_gradient_accum[valid_points_mask]
 
-            self.denom = self.denom[~prune_mask]
-            self.max_radii2D = self.max_radii2D[~prune_mask]
+            self.denom = self.denom[valid_points_mask]
+            self.max_radii2D = self.max_radii2D[valid_points_mask]
 
             new_gaussian_number = self._new_features_dc.shape[0]
             if new_gaussian_number == 0:
                 new_gaussian_number = -prune_mask.shape[0]
             
-            prune_mask_origin = ~prune_mask[:-new_gaussian_number]
-            prune_mask_new = ~prune_mask[-new_gaussian_number:]
-            optimizable_tensors = self._prune_optimizer(prune_mask_new)
+            prune_mask_origin = valid_points_mask[:-new_gaussian_number]
+            prune_mask_new = valid_points_mask[-new_gaussian_number:]
             
-            self._xyz_bak = self._xyz_bak[:-new_gaussian_number][prune_mask_origin].contiguous()
-            self._rotation_bak = self._rotation_bak[:-new_gaussian_number][prune_mask_origin].contiguous()
-            self._features_dc = self._features_dc[:-new_gaussian_number][prune_mask_origin].contiguous()
-            self._features_rest = self._features_rest[:-new_gaussian_number][prune_mask_origin].contiguous()
-            self._opacity = self._opacity[:-new_gaussian_number][prune_mask_origin].contiguous()
-            self._scaling = self._scaling[:-new_gaussian_number][prune_mask_origin].contiguous()
+            self._xyz_bak = self._xyz_bak[prune_mask_origin]
+            self._rotation_bak = self._rotation_bak[prune_mask_origin]
+            self._features_dc_bak = self._features_dc_bak[prune_mask_origin]
+            self._features_rest_bak = self._features_rest_bak[prune_mask_origin]
+            self._opacity_bak = self._opacity_bak[prune_mask_origin]
+            self._scaling_bak = self._scaling_bak[prune_mask_origin]
 
+            optimizable_tensors = self._prune_optimizer(prune_mask_new)
 
-            if optimizable_tensors["_new_xyz"].shape[0] != 0:
-                self._new_xyz = optimizable_tensors["_new_xyz"]
-                self._new_features_dc = optimizable_tensors["_new_f_dc"]
-                self._new_features_rest = optimizable_tensors["_new_f_rest"]
-                self._new_opacity = optimizable_tensors["_new_opacity"]
-                self._new_scaling = optimizable_tensors["_new_scaling"]
-                self._new_rotation = optimizable_tensors["_new_rotation"]
-
-                
-                self._xyz_bak = torch.concat([self._xyz_bak, self._new_xyz]).contiguous()
-                self._rotation_bak = torch.concat([self._rotation_bak, self._new_rotation]).contiguous()
-                self._features_dc = torch.concat([self._features_dc, self._new_features_dc]).contiguous()
-                self._features_rest = torch.concat([self._features_rest, self._new_features_rest]).contiguous()
-                self._opacity = torch.concat([self._opacity, self._new_opacity]).contiguous()
-                self._scaling = torch.concat([self._scaling, self._new_scaling]).contiguous()
+            self._new_xyz = optimizable_tensors["_new_xyz"]
+            self._new_features_dc = optimizable_tensors["_new_f_dc"]
+            self._new_features_rest = optimizable_tensors["_new_f_rest"]
+            self._new_opacity = optimizable_tensors["_new_opacity"]
+            self._new_scaling = optimizable_tensors["_new_scaling"]
+            self._new_rotation = optimizable_tensors["_new_rotation"]
 
         torch.cuda.empty_cache()
 

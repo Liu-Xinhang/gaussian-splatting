@@ -1,20 +1,26 @@
 from argparse import ArgumentParser, Namespace
 from scene import GaussianModel
-from scene.frame import Frame
+from scene.frame import OneposeFrame, NeRFFrame
 import sys
 from arguments import ModelParams, OptimizationParams, MyParams, PipelineParams
+from itertools import product
 from gaussian_renderer import render
+from scipy.spatial.transform import Rotation as R
 import torch
 import torchvision
 from pathlib import Path
 import numpy as np
 import tqdm
 from utils.loss_utils import l1_loss, ssim
-from utils.pose_utils import matrix_to_quaternion
+from utils.pose_utils import matrix_to_quaternion, euler_angles_to_matrix, quaternion_to_matrix
 import os
 from utils.system_utils import searchForMaxIteration
+from utils.geometry_utils import load_ply, calculate_models_diameter
+from utils.eval_utils import DegreeAndCM
 
-def eval(image_id, dataset, opt, pipe, load_iteration, myparms, init_translation, init_rotation):
+ITERATION_NUMBER=1000
+
+def eval(image_id, dataset, opt, pipe, load_iteration, myparms, init_translation=None, init_rotation=None, pose_disturbance=None, comment=None):
     gaussians = GaussianModel(dataset.sh_degree)
 
     ## load gaussian
@@ -32,25 +38,38 @@ def eval(image_id, dataset, opt, pipe, load_iteration, myparms, init_translation
     bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 
-    frame = Frame(image_id, dataset, gaussians, load_iteration, cameras_extent=0.5027918756008148, myparms=myparms)
-
-    save_dir = Path("debug_render")
+    if myparms.mytype=="Onepose":
+        frame = OneposeFrame(image_id, dataset, gaussians, load_iteration, cameras_extent=0.5027918756008148, myparms=myparms)
+    elif myparms.mytype=="Nerf":
+        frame = NeRFFrame(image_id, dataset, gaussians, myparms=myparms)
+    else:
+        raise NotImplementedError
+    obj_name = Path(dataset.source_path).stem
+    save_dir = Path(f"debug_data_{obj_name}")
     save_dir.mkdir(exist_ok=True)
 
-    rotation, translation = frame.get_rotation_translation
+    evler = DegreeAndCM(translation_scale="m")
+
+    rotation, translation = frame.get_rotation_translation()
+    gt_pose = torch.cat((rotation, translation[:, None]), -1)
     rotation = matrix_to_quaternion(rotation)
-    Frame.gaussians.eval_setup(opt, rotation, init_translation)
+    if pose_disturbance is not None:
+        assert init_rotation is None and init_translation is None, "pose_disturbance and init_rotation/init_translation cannot be set at the same time"
+        new_pose = frame.get_disturbance(translation_disturbance=pose_disturbance[0], rotation_disturbance=pose_disturbance[1])
+        init_rotation = matrix_to_quaternion(new_pose[:3, :3]).cuda()
+        init_translation = new_pose[:3, 3].cuda()
+    gaussians.eval_setup(opt, init_rotation, init_translation)
     
     viewpoint_cam = frame.get_camera(set_to_identity=True)
     gt_image = viewpoint_cam.original_image.cuda()
     torchvision.utils.save_image(gt_image, save_dir / "gt.png")
-    Frame.gaussians.optimizer.zero_grad(set_to_none = True)
+    gaussians.optimizer.zero_grad(set_to_none = True)
 
-    progress_bar = tqdm.tqdm(range(1000), desc="optimize progress")
+    progress_bar = tqdm.tqdm(range(ITERATION_NUMBER), desc="optimize progress")
     
-    for i in range(1000):
-        Frame.gaussians.assign_transform_from_delta_pose()
-        render_pkg = render(viewpoint_cam, Frame.gaussians, pipe, background)
+    for i in range(ITERATION_NUMBER):
+        gaussians.assign_transform_from_delta_pose()
+        render_pkg = render(viewpoint_cam, gaussians, pipe, background)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
     
         Ll1 = l1_loss(image, gt_image)
@@ -59,13 +78,25 @@ def eval(image_id, dataset, opt, pipe, load_iteration, myparms, init_translation
         image_loss.backward()
 
         with torch.no_grad():
-            progress_bar.set_description(f"loss: {image_loss.item():.4f}")
-            progress_bar.update(1)
 
-            Frame.gaussians.optimizer.step()
-            Frame.gaussians.optimizer.zero_grad(set_to_none = True)
-            if i == 999 or i % 10 == 0:
-                torchvision.utils.save_image(image, save_dir / f"{i}_render.png")
+            gaussians.optimizer.step()
+            gaussians.optimizer.zero_grad(set_to_none = True)
+            if i == ITERATION_NUMBER - 1 or i % 10 == 0:
+                torchvision.utils.save_image(image, save_dir / f"{comment}_{i}_render.png")
+
+                delta_rotation, delta_translation = gaussians.get_delta_rotation, gaussians.get_delta_translation
+                delta_rotation = quaternion_to_matrix(delta_rotation)[0]
+                pred_pose = torch.cat((delta_rotation, delta_translation.T), -1).cpu().numpy()
+                
+                evler.update(gt_pose, pred_pose)
+                degree, cm = evler.get_current_degree_cm()
+                    
+            progress_bar.set_description(f"loss: {image_loss.item():.4f} degree: {degree}, cm: {cm}")
+            progress_bar.update(1)
+    _degree, _cm = evler.get_total_degree_and_cm()
+    
+    np.save(save_dir / f"{image_id}_{pose_disturbance[0]}_{pose_disturbance[1]}_{comment}_degree.npy", _degree)
+    np.save(save_dir / f"{image_id}_{pose_disturbance[0]}_{pose_disturbance[1]}_{comment}_cm.npy", _cm)
 
 
 if __name__ == "__main__":
@@ -77,11 +108,41 @@ if __name__ == "__main__":
     parser.add_argument('--load_iteration', type=int, default=None)
     args = parser.parse_args(sys.argv[1:])
     
+    # init_pose = np.loadtxt("debug_track/167_pred.txt")
+    # init_translation = torch.from_numpy(init_pose[:3, 3])
+    # init_rotation = matrix_to_quaternion(torch.from_numpy(init_pose[:3, :3]))
 
-    init_pose = np.loadtxt("temp_datasets/loquat-2/poses_ba/100.txt")
-    init_translation = torch.from_numpy(init_pose[:3, 3])
-    init_rotation = matrix_to_quaternion(torch.from_numpy(init_pose[:3, :3]))
+    ## Onepose
+    # X_directions = [0, 45]
+    # Y_directions = np.arange(0, 360, 45)
 
-    eval(0, lp.extract(args), op.extract(args), pp.extract(args), args.load_iteration, mp.extract(args), init_translation, init_rotation)
+    # for init_number, (x_direction, y_direction) in enumerate(product(X_directions, Y_directions)):
+    #     init_rotation = R.from_euler("XYZ", [x_direction, y_direction, 180], degrees=True) # for z direction, we simply omit it for the symmetry
+    #     init_rotation = torch.from_numpy(init_rotation.as_matrix()).float()
+    #     init_translation = torch.tensor([0, 0, 0])
+    #     init_rotation = matrix_to_quaternion(init_rotation)
+    #     eval(0, lp.extract(args), op.extract(args), pp.extract(args), args.load_iteration, mp.extract(args), init_translation, init_rotation, init_number)
+    
+    ## NeRF
+    # X_directions = [135, 90]
+    # Z_directions = np.arange(0, 360, 90)
+
+    # for init_number, (x_direction, z_direction) in enumerate(product(X_directions, Z_directions)):
+    #     init_rotation = R.from_euler("XYZ", [x_direction, 0, z_direction], degrees=True) # for z direction, we simply omit it for the symmetry
+    #     init_rotation = torch.from_numpy(init_rotation.as_matrix()).float()
+    #     init_translation = torch.tensor([0, 0, 0])
+    #     init_rotation = matrix_to_quaternion(init_rotation)
+    #     eval(0, lp.extract(args), op.extract(args), pp.extract(args), args.load_iteration, mp.extract(args), init_translation, init_rotation, init_number)
+    #     break
+
+    ## random pose
+    diameter = calculate_models_diameter(load_ply(Path(args.source_path) / "points3d.ply"))
+    # translation_range = [i / 100 for i in range(0, 26, 2)]
+    translation_range = [25 / 100]
+    # for item_number in [1, 20, 54, 105, 153]: ## random number
+    for item_number in [1]:
+        for i in range(5):
+            eval(item_number, lp.extract(args), op.extract(args), pp.extract(args), args.load_iteration, mp.extract(args), pose_disturbance=(0.25, 15), comment=i)
+            break
 
     
