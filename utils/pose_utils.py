@@ -174,8 +174,8 @@ def add_disturbance(init_pose:torch.tensor, translation_pertubance: float, rotat
         the rotation pertubance is uniformly sampled from (-rotation_pertubance, rotation_pertubance) in degree in XYZ format
     """
     rotation_pertubance = rotation_pertubance / 180 * torch.pi
-    delta_angle = torch.ones(3) * 2 * rotation_pertubance - rotation_pertubance
-    delta_translation = torch.ones(3) * 2 * translation_pertubance - translation_pertubance
+    delta_angle = torch.rand(3) * 2 * rotation_pertubance - rotation_pertubance
+    delta_translation = torch.rand(3) * 2 * translation_pertubance - translation_pertubance
 
     delta_rotation = euler_angles_to_matrix(delta_angle, "XYZ") # 3, 3
     new_rotation = delta_rotation @ init_pose[:3, :3]

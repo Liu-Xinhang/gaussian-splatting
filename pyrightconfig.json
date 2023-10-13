@@ -1,0 +1,10 @@
+{
+	"exclude": [
+        "debug*",
+		"200_iteration",
+		"400_iteration",
+		"datasets",
+		"temp_datasets"
+
+    ],
+}

@@ -20,10 +20,12 @@ import numpy as np
 import json
 from pathlib import Path
 from plyfile import PlyData, PlyElement
+from utils.geometry_utils import load_ply
 from utils.sh_utils import SH2RGB
 from scene.gaussian_model import BasicPointCloud
 from utils.read_utils import remove_background_by_bounding_box, remove_background_by_mask, \
     get_2d_bounding_box, project_points, read_intrinsic_data
+from utils.load_llff import load_llff_data
 
 class CameraInfo(NamedTuple):
     uid: int
@@ -68,11 +70,44 @@ def getNerfppNorm(cam_info):
 
     return {"translate": translate, "radius": radius}
 
+def readYCBVRenderCameras(cam_extrinsics_files, cam_intrinsic, images_folder: Path):
+    cam_infos = []
+    for idx, cam_extrinsics_file in enumerate(cam_extrinsics_files):
+        sys.stdout.write('\r')
+        # the exact output you're looking for:
+        sys.stdout.write("Reading camera {}/{}".format(idx+1, len(cam_extrinsics_files)))
+        sys.stdout.flush()
+
+        extr = np.load(cam_extrinsics_file)[:3]
+        extr[:3, 3] /= 1000 # convert mm to m
+        intr = cam_intrinsic
+
+        uid = idx
+        R = extr[:3, :3].T
+        T = extr[:3, 3]
+
+        image_path = images_folder / f"{idx:06d}.png"
+        image_name = f"{idx}"
+        image = Image.open(image_path)
+
+        width , height = image.size
+
+        focal_length_x = intr[0, 0]
+        focal_length_y = intr[1, 1]
+        FovY = focal2fov(focal_length_y, height)
+        FovX = focal2fov(focal_length_x, width)
+        
+        cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image, ## 这里图像已经加载进来了
+                              image_path=image_path, image_name=image_name, width=width, height=height)
+        cam_infos.append(cam_info)
+
+    sys.stdout.write('\n')
+    return cam_infos
 
 def readOneposeCameras(cam_extrinsics_files, cam_intrinsic, images_folder:Path, crop_by_bounding_box=False, crop_by_mask=False):
 
     ## 加载点，为crop_by_boundingbox 做准备
-    corners = np.loadtxt(images_folder.parent / "box3d_corners.txt")
+    corners = np.loadtxt(images_folder.parent.parent / "box3d_corners.txt")
     ## 加载mask，为crop_by_mask 做准备
     total_mask_paths = (images_folder.parent / "mask").glob("*.npy")
     total_mask_paths = sorted(total_mask_paths, key=lambda x: int(x.stem))
@@ -107,6 +142,40 @@ def readOneposeCameras(cam_extrinsics_files, cam_intrinsic, images_folder:Path, 
 
         focal_length_x = intr[0, 0]
         focal_length_y = intr[1, 1]
+        FovY = focal2fov(focal_length_y, height)
+        FovX = focal2fov(focal_length_x, width)
+        
+        cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image, ## 这里图像已经加载进来了
+                              image_path=image_path, image_name=image_name, width=width, height=height)
+        cam_infos.append(cam_info)
+    sys.stdout.write('\n')
+    return cam_infos
+
+
+def readllffCameras(poses, images):
+    cam_infos = []
+    for idx, (image, pose) in enumerate(zip(images, poses)):
+        sys.stdout.write('\r')
+        # the exact output you're looking for:
+        sys.stdout.write("Reading camera {}/{}".format(idx+1, len(poses)))
+        sys.stdout.flush()
+
+        c2w = pose[:3, :4]
+        c2w[:3, 1:3] *= -1
+        c2w = np.concatenate([c2w, np.array([[0, 0, 0, 1]])], axis=0) ## 4 * 4
+        w2c = np.linalg.inv(c2w)
+        uid = idx
+        R = w2c[:3, :3].T
+        T = w2c[:3, 3]
+
+        image_path = f"{idx}"
+        image_name = f"{idx}"
+
+        height, width = image.shape[:2]
+        image = Image.fromarray(np.uint8(image * 255))
+
+        focal_length_x = pose[2, 4]
+        focal_length_y = focal_length_x
         FovY = focal2fov(focal_length_y, height)
         FovX = focal2fov(focal_length_x, width)
         
@@ -179,8 +248,57 @@ def storePly(path, xyz, rgb):
     vertex_element = PlyElement.describe(elements, 'vertex')
     ply_data = PlyData([vertex_element])
     ply_data.write(path)
+
+def readYCBVRenderInfo(path, eval, resolution, llffhold=8):
+    def generate_xyz_and_rangdom_rgb(model_path, resolution: int):
+        xyz = load_ply(model_path) / 1000 # N, 3 convert mm to m
+        if resolution > xyz.shape[0]:
+            print(f"resolution {resolution} is larger than the number of points in the model ({xyz.shape[0]}), we will use all the points.")
+        else:
+            selected_rows = np.random.choice(xyz.shape[0], resolution, replace=False)
+            xyz = xyz[selected_rows]
+        rgb = np.random.random((xyz.shape[0], 3))
+        return xyz, rgb
+
+    cam_extrinsics_root = Path(path) / "poses"
+    cam_extrinsics_files = cam_extrinsics_root.glob("*.npy")
+    cam_extrinsics_files = sorted(cam_extrinsics_files, key=lambda x: int(x.stem))
+    cam_intrinsics_path = Path(path) / "intrinsic.txt"
+    image_path = Path(path) / "images"
+    cam_intrinsic = np.loadtxt(cam_intrinsics_path)
+
+    cam_infos = readYCBVRenderCameras(cam_extrinsics_files=cam_extrinsics_files, cam_intrinsic=cam_intrinsic, images_folder=image_path)
+
+    if eval:
+        train_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold != 0]
+        test_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold == 0]
+    else:
+        train_cam_infos = cam_infos
+        test_cam_infos = []
+
+    nerf_normalization = getNerfppNorm(train_cam_infos)
+
+    ply_path = os.path.join(path, "sparse/0/points3D.ply")
+    model_path = Path("temp_datasets") / "ycbv" / "models_eval" / f"obj_{int(Path(path).stem):06d}.ply"
+    os.makedirs(os.path.dirname(ply_path), exist_ok=True)
+
+    if True or not os.path.exists(ply_path): ##!debug阶段每次都重新生成
+        ## generate model from obj_files
+        xyz, rgb, = generate_xyz_and_rangdom_rgb(model_path, resolution)
+        storePly(ply_path, xyz, rgb)
+    try:
+        pcd = fetchPly(ply_path)
+    except:
+        pcd = None
+
+    scene_info = SceneInfo(point_cloud=pcd,
+                           train_cameras=train_cam_infos,
+                           test_cameras=test_cam_infos,
+                           nerf_normalization=nerf_normalization,
+                           ply_path=ply_path)
+    return scene_info
     
-def readOneposeInfo(path, resolution=[40, 80, 40], llffhold=8, crop_by_bounding_box=False, crop_by_mask=False, volume_init=False): ## for onepose dataset
+def readOneposeInfo(path, eval, resolution=[40, 80, 40], llffhold=8, crop_by_bounding_box=False, crop_by_mask=False, volume_init=False): ## for onepose dataset
     def generate_random_xyz_and_rgb(bounding_box_path, resolution: Union[int, Sequence[int]], volume_init=False):
         def sample_points_from_volume(bounding_box: np.ndarray, resolution: Union[int, Sequence[int]]):
             if isinstance(resolution, int):
@@ -246,7 +364,7 @@ def readOneposeInfo(path, resolution=[40, 80, 40], llffhold=8, crop_by_bounding_
     nerf_normalization = getNerfppNorm(train_cam_infos)
 
     ply_path = os.path.join(path, "sparse/0/points3D.ply")
-    bounding_box_path = os.path.join(path, "box3d_corners.txt")
+    bounding_box_path = Path(path).parent / "box3d_corners.txt"
     os.makedirs(os.path.dirname(ply_path), exist_ok=True)
 
     if True or not os.path.exists(ply_path): ##!debug阶段每次都重新生成
@@ -264,6 +382,95 @@ def readOneposeInfo(path, resolution=[40, 80, 40], llffhold=8, crop_by_bounding_
                            nerf_normalization=nerf_normalization,
                            ply_path=ply_path)
     return scene_info
+
+def readLLFFInfo(path, eval, llffhold=8):
+    def generate_random_xyz_and_rgb(resolution: Union[int, Sequence[int]], volume_init=True):
+        def sample_points_from_volume(bounding_box: np.ndarray, resolution: Union[int, Sequence[int]]):
+            if isinstance(resolution, int):
+                resolution = [resolution, resolution, resolution]
+            assert len(resolution) == 3, "resolution must be a sequence of length 3"
+            x_min, y_min, z_min = bounding_box[0]
+            x_max, y_max, z_max = bounding_box[6]
+            x = np.linspace(x_min, x_max, resolution[0])
+            y = np.linspace(y_min, y_max, resolution[1])
+            z = np.linspace(z_min, z_max, resolution[2])
+            xx, yy, zz = np.meshgrid(x, y, z)
+            return np.vstack([xx.flatten(), yy.flatten(), zz.flatten()]).T
+        def sample_points_from_bounding_box(bounding_box:np.ndarray, resolution: int):
+            assert isinstance(resolution, int), "resolution must be an integer"
+            # 定义6个面
+            faces = [
+                [bounding_box[0], bounding_box[1], bounding_box[2], bounding_box[3]],
+                [bounding_box[4], bounding_box[5], bounding_box[6], bounding_box[7]],
+                [bounding_box[0], bounding_box[1], bounding_box[5], bounding_box[4]],
+                [bounding_box[1], bounding_box[2], bounding_box[6], bounding_box[5]],
+                [bounding_box[2], bounding_box[3], bounding_box[7], bounding_box[6]],
+                [bounding_box[3], bounding_box[0], bounding_box[4], bounding_box[7]]
+            ]
+            total_sample_points = []
+            # 进行采样
+            for face in faces:
+                for i in np.linspace(0, 1, resolution):
+                    for j in np.linspace(0, 1, resolution):
+                        # 计算采样点的坐标
+                        sample_point = (
+                            (1 - i) * (1 - j) * np.array(face[0]) +
+                            i * (1 - j) * np.array(face[1]) +
+                            i * j * np.array(face[2]) +
+                            (1 - i) * j * np.array(face[3])
+                        )
+                        total_sample_points.append(sample_point)
+            return np.array(total_sample_points)
+        bounding_box = np.array(
+            [[-1, -1, -1],
+            [-1, -1, 1],
+            [-1, 1, 1],
+            [-1, 1, -1],
+            [1, -1, -1],
+            [1, -1, 1],
+            [1, 1, 1],
+            [1, 1, -1]]
+        )
+        if volume_init:
+            xyz = sample_points_from_volume(bounding_box, resolution)
+        else:
+            xyz = sample_points_from_bounding_box(bounding_box, resolution)
+        rgb = np.random.random((xyz.shape[0], 3))
+        return xyz, rgb
+    
+    images, poses, bds, render_poses, i_test = load_llff_data(path)
+    cam_infos_unsorted = readllffCameras(poses, images)
+    cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
+
+    if eval:
+        print("eval mode activate   ")
+        train_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold != 0]
+        test_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold == 0]
+    else:
+        train_cam_infos = cam_infos
+        test_cam_infos = []
+
+    nerf_normalization = getNerfppNorm(train_cam_infos)
+
+    ply_path = os.path.join(path, "sparse/0/points3D.ply")
+    os.makedirs(os.path.dirname(ply_path), exist_ok=True)
+
+    if True or not os.path.exists(ply_path): ##!debug阶段每次都重新生成
+        print("random generate point cloud from the bounding box, will happen only the first time you open the scene.")
+        xyz, rgb, = generate_random_xyz_and_rgb(40)
+        storePly(ply_path, xyz, rgb)
+    try:
+        pcd = fetchPly(ply_path)
+    except:
+        pcd = None
+
+    scene_info = SceneInfo(point_cloud=pcd,
+                           train_cameras=train_cam_infos,
+                           test_cameras=test_cam_infos,
+                           nerf_normalization=nerf_normalization,
+                           ply_path=ply_path)
+    return scene_info
+
 
 def readColmapSceneInfo(path, images, eval, llffhold=8):
     try:
@@ -393,5 +600,7 @@ def readNerfSyntheticInfo(path, white_background, eval, extension=".png"):
 sceneLoadTypeCallbacks = {
     "Colmap": readColmapSceneInfo,
     "Blender" : readNerfSyntheticInfo,
-    "Onepose" : readOneposeInfo
+    "Onepose" : readOneposeInfo,
+    "llff" : readLLFFInfo,
+    "ycbv_render": readYCBVRenderInfo
 }

@@ -21,6 +21,7 @@ from simple_knn._C import distCUDA2
 from utils.graphics_utils import BasicPointCloud
 from utils.pose_utils import matrix_to_quaternion, quaternion_to_matrix
 from utils.general_utils import strip_symmetric, build_scaling_rotation
+from utils.optimizer_rate import *
 
 class GaussianModel: ## 这个类存储的就是3d gaussian
 
@@ -281,9 +282,9 @@ class GaussianModel: ## 这个类存储的就是3d gaussian
                                                     lr_final=training_args.position_lr_final*self.spatial_lr_scale,
                                                     lr_delay_mult=training_args.position_lr_delay_mult,
                                                     max_steps=training_args.position_lr_max_steps)
-    def set_optimizer(self, eval_args):
+    def set_optimizer(self, eval_args, opt):
         l = [ ## 这个应该是Adam优化器可以识别的格式
-            {'params': [self._delta_translation], 'lr': eval_args.position_lr_init, "name": "delta_translation"},
+            {'params': [self._delta_translation], 'lr': opt.delta_translation_init*self.spatial_lr_scale, "name": "delta_translation"},
             {'params': [self._delta_rotation], 'lr': eval_args.rotation_lr, "name": "delta_rotation"},
             
             {'params': [self._new_xyz], 'lr': eval_args.position_lr_init, "name": "_new_xyz"},
@@ -295,12 +296,20 @@ class GaussianModel: ## 这个类存储的就是3d gaussian
         ]
 
         self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
-        # self.xyz_scheduler_args = get_expon_lr_func(lr_init=eval_args.position_lr_init*self.spatial_lr_scale,
-        #                                             lr_final=eval_args.position_lr_final*self.spatial_lr_scale,
-        #                                             lr_delay_mult=eval_args.position_lr_delay_mult,
-        #                                             max_steps=eval_args.position_lr_max_steps)
+
+        if opt.scheduler_type == "constant":
+            self.delta_translation_scheduler_args = get_constant_lr_func(opt.delta_translation_init*self.spatial_lr_scale)
+        elif opt.scheduler_type == "constant_then_expon_lr":
+            self.delta_translation_scheduler_args = get_constant_then_expon_lr_func(lr_init=opt.delta_translation_init*self.spatial_lr_scale,
+                                                    lr_final=opt.delta_translation_final*self.spatial_lr_scale,
+                                                    const_step=opt.eval_iterations//2,
+                                                    max_steps=opt.eval_iterations)
+        elif opt.scheduler_type == "multi_step":
+            self.delta_translation_scheduler_args = get_multi_step_lr_func(opt.delta_translation_init * self.spatial_lr_scale, [50, 100, 150], 0.8)
+        else:
+            raise NotImplementedError
         
-    def eval_setup(self, eval_args, rotation=None, translation=None):
+    def eval_setup(self, eval_args, opt, rotation=None, translation=None):
         self.percent_dense = eval_args.percent_dense
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
@@ -327,7 +336,7 @@ class GaussianModel: ## 这个类存储的就是3d gaussian
             self._delta_translation = translation.reshape(1, 3).float().cuda().requires_grad_(True)
         
 
-        self.set_optimizer(eval_args)
+        self.set_optimizer(eval_args, opt)
         
         self._fix_parameter()
 
@@ -336,6 +345,14 @@ class GaussianModel: ## 这个类存储的就是3d gaussian
         for param_group in self.optimizer.param_groups:
             if param_group["name"] == "xyz":
                 lr = self.xyz_scheduler_args(iteration)
+                param_group['lr'] = lr
+                return lr
+    
+    def update_learning_rate_for_delta_translation(self, iteration):
+        ''' Learning rate scheduling per step '''
+        for param_group in self.optimizer.param_groups:
+            if param_group["name"] == "delta_translation":
+                lr = self.delta_translation_scheduler_args(iteration)
                 param_group['lr'] = lr
                 return lr
 
@@ -405,6 +422,12 @@ class GaussianModel: ## 这个类存储的就是3d gaussian
         optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacity")
         self._opacity = optimizable_tensors["opacity"]
 
+    def load_camera_extent(self, path):
+        with open(path, "r") as f:
+            lines = f.readlines()
+            self.spatial_lr_scale = float(lines[0].strip())
+            print("camera extent: ", self.spatial_lr_scale)
+    
     def load_ply(self, path):
         plydata = PlyData.read(path)
 

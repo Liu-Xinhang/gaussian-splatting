@@ -14,7 +14,120 @@ from utils.read_utils import remove_background_by_bounding_box, remove_backgroun
 from utils.graphics_utils import focal2fov
 from utils.pose_utils import matrix_to_quaternion, add_disturbance
 from scene.dataset_readers import CameraInfo
+from utils.load_llff import load_llff_data
+class llffFrame:
+    root_path = None
+    fovx = None
+    frames = None
+    gaussians = None
 
+    llff_data = None
+
+    def __init__(self, id:int, args: ModelParams, gaussians: GaussianModel, resolution_scales=[1.0]) -> None:
+        self.model_path = args.model_path
+        self.id = id
+
+        self.resolution_scales = resolution_scales
+
+        self.cameras = {}
+        if llffFrame.llff_data is None:
+        ## read all data and cache it
+            llffFrame.llff_data = load_llff_data(args.source_path)
+        self.images, self.poses, _, _, _ = llffFrame.llff_data
+        
+        if llffFrame.gaussians is None:
+            llffFrame.gaussians = gaussians
+        else:
+            print("Gaussians already loaded, skipping")
+
+        assert id <= len(self.images) // 8
+
+        camera = self._read_camera(id)
+
+        for resolution_scale in resolution_scales:
+            print("Loading Training Cameras")
+            self.cameras[resolution_scale] = loadCam(args, self.id, camera, resolution_scale)
+
+    def _read_camera(self, idx):
+
+        cam_infos = []
+        image = self.images[idx * 8 + 1]
+        pose = self.poses[idx * 8 + 1]
+
+        c2w = pose[:3, :4]
+        c2w[:3, 1:3] *= -1
+
+        c2w = np.concatenate([c2w, np.array([[0, 0, 0, 1]])], axis=0) ## 4 * 4
+        w2c = np.linalg.inv(c2w)
+        uid = idx
+        R = w2c[:3, :3].T
+        T = w2c[:3, 3]
+
+        image_path = f"{idx}"
+        image_name = f"{idx}"
+
+        height, width = image.shape[:2]
+        image = Image.fromarray(np.uint8(image * 255))
+
+        focal_length_x = pose[2, 4]
+        focal_length_y = focal_length_x
+        FovY = focal2fov(focal_length_y, height)
+        FovX = focal2fov(focal_length_x, width)
+        
+        return CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image, ## 这里图像已经加载进来了
+                                image_path=image_path, image_name=image_name, width=width, height=height)
+    
+    def transform(self, resolution, rotation=None, translation=None):
+        """
+        assign the pose from the camera to the gaussian points, if rotation and translation is None, we read the 
+        camera extrinsics as the object pose.
+        """
+        assert resolution in self.resolution_scales, "resolution must be in {}".format(self.resolution_scales)
+        camera = self.cameras[resolution]
+        if rotation is None:
+            rotation = torch.from_numpy(camera.R.T).float().cuda()
+        else:
+            rotation = rotation.float().cuda()
+        if translation is None:
+            translation = torch.from_numpy(camera.T).float().cuda()
+        else:
+            translation = translation.float().cuda()
+        
+        camera.reset_transform(np.eye(3), np.zeros(3))
+
+        llffFrame.gaussians.assign_transform(rotation, translation)
+
+        return camera
+    
+
+    def get_rotation_translation(self, resolution=1):
+        camera = self.cameras[resolution]
+        return torch.from_numpy(camera.R.T).float(), torch.from_numpy(camera.T).float()
+    
+
+    def get_disturbance(self, translation_disturbance, rotation_disturbance, resolution=1):
+        camera = self.cameras[resolution]
+        rotation, translation = torch.from_numpy(camera.R.T).float(), torch.from_numpy(camera.T).float()
+        init_pose = torch.cat((rotation, translation[:, None]), -1)
+        return add_disturbance(init_pose, translation_disturbance, rotation_disturbance)
+    
+    def get_camera(self, set_to_identity, resolution=1):
+        """
+        assign the pose from the camera to the gaussian points
+        """
+        assert resolution in self.resolution_scales, "resolution must be in {}".format(self.resolution_scales)
+        camera = self.cameras[resolution]
+        if set_to_identity:
+            camera.reset_transform(np.eye(3), np.zeros(3))
+        return camera
+
+    def save(self, iteration):
+        point_cloud_path = os.path.join(self.model_path, "point_cloud/iteration_{}".format(iteration))
+        llffFrame.gaussians.save_ply(os.path.join(point_cloud_path, "point_cloud.ply"))
+
+    def getTrainCameras(self, scale=1.0):
+        return self.cameras[scale]
+    
 class NeRFFrame:
     root_path = None
     fovx = None
@@ -25,7 +138,6 @@ class NeRFFrame:
         :param path: Path to colmap scene main folder.
         """
         self.model_path = args.model_path
-        self.loaded_iter = None
         
         self.id = id
         self.resolution_scales = resolution_scales
@@ -127,7 +239,7 @@ class NeRFFrame:
 
     def save(self, iteration):
         point_cloud_path = os.path.join(self.model_path, "point_cloud/iteration_{}".format(iteration))
-        OneposeFrame.gaussians.save_ply(os.path.join(point_cloud_path, "point_cloud.ply"))
+        NeRFFrame.gaussians.save_ply(os.path.join(point_cloud_path, "point_cloud.ply"))
 
     def getTrainCameras(self, scale=1.0):
         return self.cameras[scale]
@@ -139,12 +251,11 @@ class OneposeFrame:
     cam_intrinsic = None
     gaussians = None
     
-    def __init__(self, id: int, args : ModelParams, gaussians : GaussianModel, load_iteration=None, resolution_scales=[1.0], cameras_extent=None, myparms=None):
-        """b
+    def __init__(self, id: int, args : ModelParams, gaussians : GaussianModel, resolution_scales=[1.0], myparms=None):
+        """
         :param path: Path to colmap scene main folder.
         """
         self.model_path = args.model_path
-        self.loaded_iter = None
         
         self.id = id
         self.resolution_scales = resolution_scales
@@ -153,7 +264,7 @@ class OneposeFrame:
         if OneposeFrame.root_path is None:
             OneposeFrame.root_path = Path(args.source_path)
         if OneposeFrame.corners is None:
-            OneposeFrame.corners = np.loadtxt(OneposeFrame.root_path / "box3d_corners.txt")
+            OneposeFrame.corners = np.loadtxt(OneposeFrame.root_path.parent / "box3d_corners.txt")
         if OneposeFrame.cam_intrinsic is None:
             OneposeFrame.cam_intrinsic = read_intrinsic_data(OneposeFrame.root_path / "intrinsics.txt")
         if OneposeFrame.gaussians is None:
@@ -161,7 +272,6 @@ class OneposeFrame:
         else:
             print("Gaussians already loaded, skipping")
         
-        self.cameras_extent = cameras_extent
         camera = self._read_camera(
             OneposeFrame.root_path / f"poses_ba/{self.id}.txt",
             OneposeFrame.root_path / f"input/{self.id}.png",

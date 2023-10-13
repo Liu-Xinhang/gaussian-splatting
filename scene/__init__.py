@@ -42,9 +42,13 @@ class Scene:
         self.train_cameras = {}
         self.test_cameras = {}
         if myparm is not None and myparm.mytype=='Onepose':
-            scene_info = sceneLoadTypeCallbacks["Onepose"](args.source_path, crop_by_bounding_box=myparm.crop_by_bounding_box, crop_by_mask=myparm.crop_by_mask, volume_init=myparm.volume_init)
+            scene_info = sceneLoadTypeCallbacks["Onepose"](args.source_path, args.eval, crop_by_bounding_box=myparm.crop_by_bounding_box, crop_by_mask=myparm.crop_by_mask, volume_init=myparm.volume_init)
         elif myparm is not None and myparm.mytype=='Nerf':
             scene_info = sceneLoadTypeCallbacks["Blender"](args.source_path, args.white_background, args.eval)
+        elif myparm is not None and myparm.mytype=='llff':
+            scene_info = sceneLoadTypeCallbacks['llff'](args.source_path, args.eval)
+        elif myparm is not None and myparm.mytype=='YCBVRender':
+            scene_info = sceneLoadTypeCallbacks['ycbv_render'](args.source_path, args.eval, resolution=20000)
         elif os.path.exists(os.path.join(args.source_path, "sparse")):
             scene_info = sceneLoadTypeCallbacks["Colmap"](args.source_path, args.images, args.eval)
         elif os.path.exists(os.path.join(args.source_path, "transforms_train.json")):
@@ -72,6 +76,7 @@ class Scene:
             random.shuffle(scene_info.test_cameras)  # Multi-res consistent random shuffling
 
         self.cameras_extent = scene_info.nerf_normalization["radius"]
+        print("self.camera_extent: ", self.cameras_extent)
 
         for resolution_scale in resolution_scales:
             print("Loading Training Cameras")
@@ -90,6 +95,9 @@ class Scene:
     def save(self, iteration):
         point_cloud_path = os.path.join(self.model_path, "point_cloud/iteration_{}".format(iteration))
         self.gaussians.save_ply(os.path.join(point_cloud_path, "point_cloud.ply"))
+        ## 单独存储self.cameras_extent 参数用于加载
+        with open(os.path.join(point_cloud_path, "cameras_extent.json"), 'w') as file:
+            json.dump(self.cameras_extent, file)
 
     def getTrainCameras(self, scale=1.0):
         return self.train_cameras[scale]

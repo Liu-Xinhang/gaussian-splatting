@@ -1,8 +1,8 @@
 from argparse import ArgumentParser, Namespace
 from scene import GaussianModel
-from scene.frame import OneposeFrame, NeRFFrame
+from scene.frame import OneposeFrame, NeRFFrame, llffFrame
 import sys
-from arguments import ModelParams, OptimizationParams, MyParams, PipelineParams
+from arguments import ModelParams, OptimizationParams, MyParams, PipelineParams, OptimizierParams
 from itertools import product
 from gaussian_renderer import render
 from scipy.spatial.transform import Rotation as R
@@ -18,9 +18,8 @@ from utils.system_utils import searchForMaxIteration
 from utils.geometry_utils import load_ply, calculate_models_diameter
 from utils.eval_utils import DegreeAndCM
 
-ITERATION_NUMBER=1000
 
-def eval(image_id, dataset, opt, pipe, load_iteration, myparms, init_translation=None, init_rotation=None, pose_disturbance=None, comment=None):
+def eval(image_id, dataset, op, pipe, load_iteration, myparms, opt, init_translation=None, init_rotation=None, pose_disturbance=None, comment=None):
     gaussians = GaussianModel(dataset.sh_degree)
 
     ## load gaussian
@@ -34,6 +33,11 @@ def eval(image_id, dataset, opt, pipe, load_iteration, myparms, init_translation
                         "point_cloud",
                         "iteration_" + str(loaded_iter),
                         "point_cloud.ply"))
+    gaussians.load_camera_extent(os.path.join(dataset.model_path,
+                        "point_cloud",
+                        "iteration_" + str(loaded_iter),
+                        "cameras_extent.json"
+                        ))
     
     bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
@@ -42,6 +46,8 @@ def eval(image_id, dataset, opt, pipe, load_iteration, myparms, init_translation
         frame = OneposeFrame(image_id, dataset, gaussians, load_iteration, cameras_extent=0.5027918756008148, myparms=myparms)
     elif myparms.mytype=="Nerf":
         frame = NeRFFrame(image_id, dataset, gaussians, myparms=myparms)
+    elif myparms.mytype=="llff":
+        frame = llffFrame(image_id, dataset, gaussians)
     else:
         raise NotImplementedError
     obj_name = Path(dataset.source_path).stem
@@ -58,22 +64,26 @@ def eval(image_id, dataset, opt, pipe, load_iteration, myparms, init_translation
         new_pose = frame.get_disturbance(translation_disturbance=pose_disturbance[0], rotation_disturbance=pose_disturbance[1])
         init_rotation = matrix_to_quaternion(new_pose[:3, :3]).cuda()
         init_translation = new_pose[:3, 3].cuda()
-    gaussians.eval_setup(opt, init_rotation, init_translation)
+    gaussians.eval_setup(op, opt, init_rotation, init_translation)
     
     viewpoint_cam = frame.get_camera(set_to_identity=True)
     gt_image = viewpoint_cam.original_image.cuda()
-    torchvision.utils.save_image(gt_image, save_dir / "gt.png")
+    # torchvision.utils.save_image(gt_image, save_dir / "gt.png")
     gaussians.optimizer.zero_grad(set_to_none = True)
 
-    progress_bar = tqdm.tqdm(range(ITERATION_NUMBER), desc="optimize progress")
+    progress_bar = tqdm.tqdm(range(opt.eval_iterations), desc="optimize progress")
     
-    for i in range(ITERATION_NUMBER):
+    for i in range(opt.eval_iterations):
         gaussians.assign_transform_from_delta_pose()
+        lr = gaussians.update_learning_rate_for_delta_translation(i)
+        print("iteration: {}, lr: {}".format(i, lr))
+
+        pipe.convert_SHs_python = True
         render_pkg = render(viewpoint_cam, gaussians, pipe, background)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
     
         Ll1 = l1_loss(image, gt_image)
-        image_loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+        image_loss = (1.0 - op.lambda_dssim) * Ll1 + op.lambda_dssim * (1.0 - ssim(image, gt_image))
 
         image_loss.backward()
 
@@ -81,13 +91,12 @@ def eval(image_id, dataset, opt, pipe, load_iteration, myparms, init_translation
 
             gaussians.optimizer.step()
             gaussians.optimizer.zero_grad(set_to_none = True)
-            if i == ITERATION_NUMBER - 1 or i % 10 == 0:
-                torchvision.utils.save_image(image, save_dir / f"{comment}_{i}_render.png")
+            if i == opt.eval_iterations - 1 or i % 10 == 0:
+                # torchvision.utils.save_image(image, save_dir / f"{comment}_{i}_render.png")
 
                 delta_rotation, delta_translation = gaussians.get_delta_rotation, gaussians.get_delta_translation
                 delta_rotation = quaternion_to_matrix(delta_rotation)[0]
                 pred_pose = torch.cat((delta_rotation, delta_translation.T), -1).cpu().numpy()
-                
                 evler.update(gt_pose, pred_pose)
                 degree, cm = evler.get_current_degree_cm()
                     
@@ -105,6 +114,7 @@ if __name__ == "__main__":
     op = OptimizationParams(parser)
     mp = MyParams(parser)
     pp = PipelineParams(parser)
+    opt = OptimizierParams(parser)
     parser.add_argument('--load_iteration', type=int, default=None)
     args = parser.parse_args(sys.argv[1:])
     
@@ -135,14 +145,10 @@ if __name__ == "__main__":
     #     eval(0, lp.extract(args), op.extract(args), pp.extract(args), args.load_iteration, mp.extract(args), init_translation, init_rotation, init_number)
     #     break
 
-    ## random pose
-    diameter = calculate_models_diameter(load_ply(Path(args.source_path) / "points3d.ply"))
     # translation_range = [i / 100 for i in range(0, 26, 2)]
-    translation_range = [25 / 100]
     # for item_number in [1, 20, 54, 105, 153]: ## random number
-    for item_number in [1]:
+    for item_number in [1, 20, 54, 105, 153]:
         for i in range(5):
-            eval(item_number, lp.extract(args), op.extract(args), pp.extract(args), args.load_iteration, mp.extract(args), pose_disturbance=(0.25, 15), comment=i)
-            break
+            eval(item_number, lp.extract(args), op.extract(args), pp.extract(args), args.load_iteration, mp.extract(args), opt.extract(args), pose_disturbance=(0.15, 15), comment=i)
 
     

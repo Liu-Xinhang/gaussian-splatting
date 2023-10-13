@@ -2,7 +2,7 @@ from argparse import ArgumentParser, Namespace
 from scene import GaussianModel
 from scene.frame import OneposeFrame
 import sys
-from arguments import ModelParams, OptimizationParams, MyParams, PipelineParams
+from arguments import ModelParams, OptimizationParams, MyParams, PipelineParams, OptimizierParams
 from gaussian_renderer import render
 import torch
 import torchvision
@@ -19,7 +19,7 @@ from utils.eval_utils import DegreeAndCM
 ## 暂时设置一个全局的变量
 BUNDLE_ADJUSTMENT = False 
 
-def eval(dataset, opt, pipe, load_iteration, myparms, init_translation, init_rotation):
+def eval(dataset, op, pipe, load_iteration, myparms, opt, init_translation, init_rotation):
     gaussians = GaussianModel(dataset.sh_degree)
     gaussians.spatial_lr_scale = 0.5027918756008148
     ## load gaussian
@@ -33,19 +33,25 @@ def eval(dataset, opt, pipe, load_iteration, myparms, init_translation, init_rot
                         "point_cloud",
                         "iteration_" + str(loaded_iter),
                         "point_cloud.ply"))
+    # gaussians.load_camera_extent(os.path.join(dataset.model_path,
+    #                     "point_cloud",
+    #                     "iteration_" + str(loaded_iter),
+    #                     "cameras_extent.json"
+    #                     ))
     
     
     bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 
-    gaussians.eval_setup(opt)
+    gaussians.eval_setup(op, opt)
     gaussians.assign_transform(init_rotation, init_translation, bundle=BUNDLE_ADJUSTMENT)
 
     # scale = gaussians.get_scaling
     # np.save("scale.npy", scale.detach().cpu().numpy())
     # sys.exit()
     
-    save_dir = Path("debug_track")
+    obj_name = Path(dataset.source_path).stem
+    save_dir = Path(f"debug_track_{obj_name}")
     save_dir.mkdir(exist_ok=True)
     
     ## glob all images
@@ -65,10 +71,10 @@ def eval(dataset, opt, pipe, load_iteration, myparms, init_translation, init_rot
         start_time = time.time()
         print(f"eval {str(image_path)}")
         gaussians.refresh_transform(use_inertia=True, bundle=BUNDLE_ADJUSTMENT)
-        gaussians.set_optimizer(opt)  ##! 因为学习率不会发生变化，所以这里我们就直接全部更新了
+        gaussians.set_optimizer(op, opt)  ##! 因为学习率不会发生变化，所以这里我们就直接全部更新了
 
         if BUNDLE_ADJUSTMENT and image_id - refresh_start_iter == 20:
-            gaussians.move_new_guassian_to_old(opt)
+            gaussians.move_new_guassian_to_old(op)
         
         if BUNDLE_ADJUSTMENT and make_density: ##! 设置啥会儿去更新
             print("densify and prune")
@@ -78,16 +84,18 @@ def eval(dataset, opt, pipe, load_iteration, myparms, init_translation, init_rot
             size_threshold = 20
             ## 我们会根据梯度，不透明度，camera的extent以及size的大小来决定保留哪些内容
             # gaussians.densify_and_prune(0.0001, 0.005, 0.5027918756008148, size_threshold, bundle=BUNDLE_ADJUSTMENT) ##!
-            gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, 0.5027918756008148, size_threshold, bundle=BUNDLE_ADJUSTMENT)
+            gaussians.densify_and_prune(op.densify_grad_threshold, 0.005, 0.5027918756008148, size_threshold, bundle=BUNDLE_ADJUSTMENT)
 
-        frame = OneposeFrame(image_id, dataset, gaussians, load_iteration, cameras_extent=0.5027918756008148, myparms=myparms)
+        frame = OneposeFrame(image_id, dataset, gaussians, myparms=myparms)
 
         gt_rotation, gt_translation = frame.get_rotation_translation 
         gt_pose = torch.concat((gt_rotation, gt_translation.unsqueeze(-1)), -1).cpu().numpy()
         
         viewpoint_cam = frame.get_camera(set_to_identity=True)
         gt_image = viewpoint_cam.original_image.cuda()
-        torchvision.utils.save_image(gt_image, save_dir / f"{image_id}_gt.png")
+        
+        if myparms.save_image:
+            torchvision.utils.save_image(gt_image, save_dir / f"{image_id}_gt.png")
         
         gaussians.optimizer.zero_grad(set_to_none = True)
 
@@ -100,7 +108,7 @@ def eval(dataset, opt, pipe, load_iteration, myparms, init_translation, init_rot
             image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
 
             Ll1 = l1_loss(image, gt_image)
-            image_loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+            image_loss = (1.0 - op.lambda_dssim) * Ll1 + op.lambda_dssim * (1.0 - ssim(image, gt_image))
 
             image_loss.backward()
             if image_loss.item() > 0.01 and image_id - refresh_start_iter > 20:
@@ -113,12 +121,15 @@ def eval(dataset, opt, pipe, load_iteration, myparms, init_translation, init_rot
                 ## 优化器
                 gaussians.optimizer.step()
                 gaussians.optimizer.zero_grad(set_to_none = True)
+                
+                
                 if i ==  myparms.track_render_iterations-1:
                     ## 每一次迭代的最后，我们再将记录grad，为bundle adjustment做准备
                     if BUNDLE_ADJUSTMENT:
                         gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
 
-                    torchvision.utils.save_image(image, save_dir / f"{image_id}_render.png")
+                    if myparms.save_image:
+                        torchvision.utils.save_image(image, save_dir / f"{image_id}_render.png")
                     
                     ## eval pose accuracy
                     delta_rotation, delta_translation = gaussians.get_delta_rotation, gaussians.get_delta_translation
@@ -142,20 +153,21 @@ def eval(dataset, opt, pipe, load_iteration, myparms, init_translation, init_rot
         
 
 if __name__ == "__main__":
-    parser = ArgumentParser(description="Training script parameters")
+    parser = ArgumentParser(description="Track script parameters")
     lp = ModelParams(parser)
     op = OptimizationParams(parser)
     mp = MyParams(parser)
     pp = PipelineParams(parser)
+    opt = OptimizierParams(parser)
     parser.add_argument('--load_iteration', type=int, default=None)
     args = parser.parse_args(sys.argv[1:])
     
-
-    init_pose = np.loadtxt("temp_datasets/loquat-2/poses_ba/0.txt")
+    datasets = lp.extract(args)
+    init_pose = np.loadtxt(Path(datasets.source_path) / "poses_ba/0.txt")
     init_translation = torch.from_numpy(init_pose[:3, 3:]).T.float().cuda()
     init_rotation = torch.from_numpy(init_pose[:3, :3]).float().cuda()
 
-    eval(lp.extract(args), op.extract(args), pp.extract(args), args.load_iteration, mp.extract(args), init_translation, init_rotation)
+    eval(datasets, op.extract(args), pp.extract(args), args.load_iteration, mp.extract(args), opt.extract(args), init_translation, init_rotation)
 
 
     

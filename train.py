@@ -196,7 +196,7 @@ if __name__ == "__main__":
     pp = PipelineParams(parser)
     mp = MyParams(parser)
     parser.add_argument('--ip', type=str, default="127.0.0.1")
-    parser.add_argument('--port', type=int, default=6010)
+    parser.add_argument('--port', type=int, default=6014)
     parser.add_argument('--debug_from', type=int, default=-1)
     parser.add_argument('--detect_anomaly', action='store_true', default=False)
     parser.add_argument("--test_iterations", nargs="+", type=int, default=[7_000, 30_000])

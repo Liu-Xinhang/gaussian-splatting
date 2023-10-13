@@ -83,7 +83,7 @@ if __name__ == "__main__":
     pose_files = sorted(pose_files, key=lambda x: int(x.stem))
 
     # read corner information to generate the 2d bounding box
-    box3d_path = root_dir / "box3d_corners.txt"
+    box3d_path = root_dir.parent / "box3d_corners.txt"
     box3d = np.loadtxt(box3d_path)
 
     save_vis_dir = root_dir / "masks_vis"
