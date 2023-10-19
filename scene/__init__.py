@@ -49,6 +49,7 @@ class Scene:
             scene_info = sceneLoadTypeCallbacks['llff'](args.source_path, args.eval)
         elif myparm is not None and myparm.mytype=='YCBVRender':
             scene_info = sceneLoadTypeCallbacks['ycbv_render'](args.source_path, args.eval, resolution=20000)
+        elif myparm is not None and myparm.mytype=="YCBVBOP":            scene_info = sceneLoadTypeCallbacks["ycbv_bop"](args.source_path, args.eval, resolution=20000, category_type=myparm.category_type, obj_number=myparm.obj_number)
         elif os.path.exists(os.path.join(args.source_path, "sparse")):
             scene_info = sceneLoadTypeCallbacks["Colmap"](args.source_path, args.images, args.eval)
         elif os.path.exists(os.path.join(args.source_path, "transforms_train.json")):

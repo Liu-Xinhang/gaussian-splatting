@@ -82,6 +82,10 @@ class MyParams(ParamGroup):
         ## other
         self.save_image = False
 
+        ## boptrain
+        self.category_type=["real"]
+        self.obj_number = 1
+
         super().__init__(parser, "My Parameters")
 
 class OptimizierParams(ParamGroup):
@@ -90,7 +94,7 @@ class OptimizierParams(ParamGroup):
         self.delta_translation_final = 0.0016/10
         self.eval_iterations = 400
 
-        self.scheduler_type = "multi_step"
+        self.scheduler_type = "constant"
         super().__init__(parser, "Optimizier Parameters")
 
 

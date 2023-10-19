@@ -12,6 +12,8 @@
 import os
 import sys
 from PIL import Image, ImageDraw
+import random
+import pickle
 from typing import NamedTuple, Union, Sequence
 from scene.colmap_loader import read_extrinsics_text, read_intrinsics_text, qvec2rotmat, \
     read_extrinsics_binary, read_intrinsics_binary, read_points3D_binary, read_points3D_text
@@ -20,13 +22,14 @@ import numpy as np
 import json
 from pathlib import Path
 from plyfile import PlyData, PlyElement
-from utils.geometry_utils import load_ply
+from utils.geometry_utils import load_ply, select_poses
 from utils.sh_utils import SH2RGB
 from scene.gaussian_model import BasicPointCloud
 from utils.read_utils import remove_background_by_bounding_box, remove_background_by_mask, \
     get_2d_bounding_box, project_points, read_intrinsic_data
 from utils.load_llff import load_llff_data
-
+from tqdm import tqdm
+from typing import Optional
 class CameraInfo(NamedTuple):
     uid: int
     R: np.array
@@ -38,6 +41,7 @@ class CameraInfo(NamedTuple):
     image_name: str
     width: int
     height: int
+    mask: Optional[np.array] = None
 
 class SceneInfo(NamedTuple):
     point_cloud: BasicPointCloud
@@ -69,6 +73,45 @@ def getNerfppNorm(cam_info):
     translate = -center
 
     return {"translate": translate, "radius": radius}
+
+def readYCBVBOPCameras(results):
+    cam_infos = []
+    print("total files: ", len(results))
+    for idx, result in enumerate(results):
+        sys.stdout.write('\r')
+        # the exact output you're looking for:
+        sys.stdout.write("Reading camera {}/{}".format(idx+1, len(results)))
+        sys.stdout.flush()
+
+        extr = result["pose"]
+        extr[:3, 3] /= 1000 # convert mm to m
+        intr = result["cam_K"]
+
+        uid = idx
+        R = extr[:3, :3].T
+        T = extr[:3, 3]
+
+        image_path = result["img_path"]
+        image_name = f"{idx}"
+        mask_path = result["mask_path"]
+        mask = np.array(Image.open(mask_path))
+        mask = mask == 255
+        image = Image.open(image_path)
+        image = remove_background_by_mask(image, mask)
+
+        width , height = image.size
+
+        focal_length_x = intr[0, 0]
+        focal_length_y = intr[1, 1]
+        FovY = focal2fov(focal_length_y, height)
+        FovX = focal2fov(focal_length_x, width)
+        
+        cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image, ## 这里图像已经加载进来了
+                              image_path=image_path, image_name=image_name, width=width, height=height)
+        cam_infos.append(cam_info)
+
+    sys.stdout.write('\n')
+    return cam_infos
 
 def readYCBVRenderCameras(cam_extrinsics_files, cam_intrinsic, images_folder: Path):
     cam_infos = []
@@ -248,6 +291,102 @@ def storePly(path, xyz, rgb):
     vertex_element = PlyElement.describe(elements, 'vertex')
     ply_data = PlyData([vertex_element])
     ply_data.write(path)
+
+def readYCBVBOPInfo(path, eval, resolution, category_type, obj_number, llffhold=8):
+    def generate_xyz_and_rangdom_rgb(model_path, resolution: int):
+        xyz = load_ply(model_path) / 1000 # N, 3 convert mm to m
+        if resolution > xyz.shape[0]:
+            print(f"resolution {resolution} is larger than the number of points in the model ({xyz.shape[0]}), we will use all the points.")
+        else:
+            selected_rows = np.random.choice(xyz.shape[0], resolution, replace=False)
+            xyz = xyz[selected_rows]
+        rgb = np.random.random((xyz.shape[0], 3))
+        return xyz, rgb
+    
+    def grap_all_obj_image(path, obj_number, profile="png"):
+        path = Path(path)
+        total_scene_gt = sorted(path.rglob("scene_gt.json"))
+        total_scene_gt_info = sorted(path.rglob("scene_gt_info.json"))
+        total_scene_camera = sorted(path.rglob("scene_camera.json"))
+        ## category_type: pbr, real, synt
+        res = []
+        with tqdm(total=len(total_scene_gt)) as pbar:
+            for scene_gt_path, scene_gt_info_path, scene_camera_path in zip(total_scene_gt, total_scene_gt_info, total_scene_camera):
+                scene_gt = json.load(open(scene_gt_path))
+                scene_gt_info = json.load(open(scene_gt_info_path))
+                scene_camera = json.load(open(scene_camera_path))
+                data = {}
+                for image_number, total_objs in scene_gt.items():
+                    for i, obj in enumerate(total_objs):
+                        if obj["obj_id"] == obj_number:
+                            if  scene_gt_info[image_number][i]["visib_fract"] > 0.5: ## 至少要有0.5的可见区域
+                                image_path = scene_gt_path.parent / "rgb" / f"{int(image_number):06d}.{profile}"
+                                data["img_path"] = image_path
+                                data["mask_path"] = scene_gt_path.parent / "mask_visib" / f"{int(image_number):06d}_{i:06d}.png"
+                                data["cam_K"] = np.array(scene_camera[image_number]["cam_K"]).reshape(3, 3)
+                                R = np.array(obj["cam_R_m2c"]).reshape(3, 3)
+                                T = np.array(obj["cam_t_m2c"]).reshape(3, 1)
+                                data["pose"] = np.concatenate([R, T], axis=1)
+                                res.append(data.copy())
+                pbar.update()
+        return res
+    
+    path = Path(path)
+    item_number = 0
+    if "pbr" in category_type:
+        item_number += 4
+    if "real" in category_type:
+        item_number += 2
+    if "synt" in category_type:
+        item_number += 1
+    if os.path.exists("cache/{obj_number:06d}_{item_number}.pkl"):
+        print("find cache file")
+        results = pickle.load(open(f"cache/{obj_number:06d}_{item_number}.pkl", "rb"))
+    else:
+        print("no catch file found")
+        results = []
+        if "pbr" in category_type:
+            results.extend(grap_all_obj_image("temp_datasets/ycbv/train_pbr", obj_number, "jpg"))
+        if "real" in category_type:
+            results.extend(grap_all_obj_image("temp_datasets/ycbv/train_real", obj_number))
+        if "synt" in category_type:
+            results.extend(grap_all_obj_image("temp_datasets/ycbv/train_synt", obj_number))
+    
+        ## subsample results
+        # results = random.sample(results, 700)
+        results = select_poses(results, 700, 10)
+        pickle.dump(results, open(f"cache/{obj_number:06d}_{item_number}.pkl", "wb"))
+
+    cam_infos = readYCBVBOPCameras(results)
+
+    if eval:
+        train_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold != 0]
+        test_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold == 0]
+    else:
+        train_cam_infos = cam_infos
+        test_cam_infos = []
+
+    nerf_normalization = getNerfppNorm(train_cam_infos)
+
+    ply_path = os.path.join(path, "sparse/0/points3D.ply")
+    model_path = Path("temp_datasets") / "ycbv" / "models_eval" / f"obj_{obj_number:06d}.ply"
+    os.makedirs(os.path.dirname(ply_path), exist_ok=True)
+
+    if True or not os.path.exists(ply_path): ##!debug阶段每次都重新生成
+        ## generate model from obj_files
+        xyz, rgb, = generate_xyz_and_rangdom_rgb(model_path, resolution)
+        storePly(ply_path, xyz, rgb)
+    try:
+        pcd = fetchPly(ply_path)
+    except:
+        pcd = None
+
+    scene_info = SceneInfo(point_cloud=pcd,
+                           train_cameras=train_cam_infos,
+                           test_cameras=test_cam_infos,
+                           nerf_normalization=nerf_normalization,
+                           ply_path=ply_path)
+    return scene_info
 
 def readYCBVRenderInfo(path, eval, resolution, llffhold=8):
     def generate_xyz_and_rangdom_rgb(model_path, resolution: int):
@@ -602,5 +741,6 @@ sceneLoadTypeCallbacks = {
     "Blender" : readNerfSyntheticInfo,
     "Onepose" : readOneposeInfo,
     "llff" : readLLFFInfo,
-    "ycbv_render": readYCBVRenderInfo
+    "ycbv_render": readYCBVRenderInfo,
+    "ycbv_bop": readYCBVBOPInfo
 }

@@ -1,6 +1,6 @@
 from argparse import ArgumentParser, Namespace
 from scene import GaussianModel
-from scene.frame import OneposeFrame, NeRFFrame
+from scene.frame import OneposeFrame, NeRFFrame, YCBVFrame
 import sys
 from arguments import ModelParams, OptimizationParams, MyParams, PipelineParams
 from gaussian_renderer import render
@@ -32,11 +32,14 @@ def render_image(image_id, dataset, opt, pipe, load_iteration, myparms):
         frame = OneposeFrame(image_id, dataset, gaussians, load_iteration, cameras_extent=0.5027918756008148, myparms=myparms)
     elif myparms.mytype=="Nerf":
         frame = NeRFFrame(image_id, dataset, gaussians, myparms=myparms)
+    elif myparms.mytype=="YCBV":
+        frame = YCBVFrame(image_id, dataset, gaussians)
     else:
         raise NotImplementedError
 
     viewpoint_cam = frame.get_camera(set_to_identity=False) ## 先渲染一个把位姿作用在相机视角上的版本
     gaussians.reset_transform()
+    pipe.convert_SHs_python = True
     render_pkg = render(viewpoint_cam, gaussians, pipe, background)
     image_ = render_pkg["render"]
 
@@ -47,7 +50,7 @@ def render_image(image_id, dataset, opt, pipe, load_iteration, myparms):
     image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
     gt_image = viewpoint_cam.original_image
 
-    save_dir = Path("debug_NeRF")
+    save_dir = Path("debug_YCBV")
     save_dir.mkdir(exist_ok=True)
 
     torchvision.utils.save_image(image, save_dir / f"{image_id}_render.png")

@@ -3,6 +3,8 @@ import numpy as np
 import math
 from tqdm import tqdm
 from scipy.spatial import ConvexHull
+import random
+import sys
 
 def load_ply(ply_file):
 	ply_data = PlyData.read(ply_file)
@@ -52,6 +54,27 @@ def calculate_models_diameter(vertices):
 	diameter = calc_pts_diameter(valid_points)
 	
 	return diameter
+
+
+def distance(pose1, pose2):
+	rot1 = pose1["pose"][:3, :3]
+	rot2 = pose2["pose"][:3, :3]
+	return np.arccos(np.clip((np.trace(rot1.T @ rot2) - 1)/2, -1, 1)) * 180 / np.pi
+
+def select_poses(results, N, threshold):
+	res = []
+	while len(res) < N and results:
+		sys.stdout.write('\r')
+		# the exact output you're looking for:
+		sys.stdout.write(f"res: {len(res)}/ results: {len(results)}")
+		sys.stdout.flush()
+	
+		selected = random.choice(results)
+		results.remove(selected)
+		res.append(selected)
+		results = [pose for pose in results if distance(pose, selected) > threshold]
+	return res
+
 
 if __name__ == "__main__":
 	diameter = calculate_models_diameter(load_ply("temp_datasets/nerf/nerf_synthetic/hotdog/points3d.ply"))

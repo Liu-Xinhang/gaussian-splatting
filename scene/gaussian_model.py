@@ -476,6 +476,9 @@ class GaussianModel: ## 这个类存储的就是3d gaussian
 
         self.active_sh_degree = self.max_sh_degree
 
+    def _fix_delta_translation(self):
+        self._delta_translation.requires_grad_(False)
+        
     def _fix_parameter(self):
         self._features_dc.requires_grad_(False)
         self._features_rest.requires_grad_(False)

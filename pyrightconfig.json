@@ -3,6 +3,7 @@
         "debug*",
 		"200_iteration",
 		"400_iteration",
+		"800_iteration",
 		"datasets",
 		"temp_datasets"
 

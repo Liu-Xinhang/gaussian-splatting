@@ -10,3 +10,6 @@ datasets
 temp_datasets
 debug*
 reference_images
+pyrightconfig.json
+boptrained_model
+eval_ycb_bak.py
