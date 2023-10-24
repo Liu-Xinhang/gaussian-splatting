@@ -42,6 +42,7 @@ class CameraInfo(NamedTuple):
     width: int
     height: int
     mask: Optional[np.array] = None
+    mask_vis: Optional[np.ndarray] = None
 
 class SceneInfo(NamedTuple):
     point_cloud: BasicPointCloud

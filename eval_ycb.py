@@ -11,7 +11,7 @@ import torchvision
 from pathlib import Path
 import numpy as np
 import tqdm
-from utils.loss_utils import l1_loss, ssim, mask_loss, dice_loss, iou_loss, weighted_mse_loss
+from utils.loss_utils import l1_loss, ssim, mask_loss, dice_loss, iou_loss, weighted_mse_loss, Optical_loss
 from utils.pose_utils import matrix_to_quaternion, euler_angles_to_matrix, quaternion_to_matrix
 import os
 import json
@@ -49,8 +49,8 @@ def eval(image_id, dataset, op, pipe, load_iteration, myparms, opt, model_points
         raise NotImplementedError
     seq_num = Path(dataset.source_path).stem
     obj_name = Path(dataset.model_path).parent.stem
-    save_dir = Path(f"debug_YCBV/debug_data_{obj_name}_{seq_num}")
-    save_dir.mkdir(exist_ok=True)
+    save_dir = Path(f"debug_YCBV_optical/debug_data_{obj_name}_{seq_num}")
+    save_dir.mkdir(exist_ok=True, parents=True)
 
     evler = DegreeAndCM(translation_scale="m")
 
@@ -76,13 +76,17 @@ def eval(image_id, dataset, op, pipe, load_iteration, myparms, opt, model_points
     gaussians.eval_setup(op, opt, init_rotation, init_translation)
     
     viewpoint_cam = frame.get_camera(set_to_identity=True)
-    gt_image = viewpoint_cam.original_image.cuda()
-    gt_mask = viewpoint_cam.original_mask.cuda()
-
-    # torchvision.utils.save_image(gt_image, save_dir / f"{frame.image_name:04d}_gt.png")
+    gt_image = viewpoint_cam.original_image.cuda() # 3, H, W
+    gt_mask = viewpoint_cam.original_mask.cuda() # H, W
+    gt_mask_vis = viewpoint_cam.original_mask_vis.cuda() # H, W
+    if myparms.save_image:
+        torchvision.utils.save_image(gt_image, save_dir / f"{frame.image_name:04d}_gt.png")
+        torchvision.utils.save_image(gt_mask_vis, save_dir / f"{frame.image_name:04d}_gt_mask_vis.png")
+        torchvision.utils.save_image(gt_mask, save_dir / f"{frame.image_name:04d}_gt_mask.png")
     gaussians.optimizer.zero_grad(set_to_none = True)
 
     progress_bar = tqdm.tqdm(range(opt.eval_iterations), desc="optimize progress")
+    optical_loss = Optical_loss()
     
     for i in range(opt.eval_iterations):
         gaussians.assign_transform_from_delta_pose()
@@ -98,14 +102,16 @@ def eval(image_id, dataset, op, pipe, load_iteration, myparms, opt, model_points
             render_pkg = render(viewpoint_cam, gaussians, pipe, torch.tensor([1, 1, 1], dtype=torch.float32, device="cuda") if not dataset.white_background else torch.tensor([0, 0, 0], dtype=torch.float32, device="cuda"))
             image_w, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
             mask_pred = 1 - (image_w - image).mean(0)
-            image_loss = dice_loss(mask_pred, gt_mask)
-            # torchvision.utils.save_image(mask_pred, save_dir / f"{frame.image_name:04d}_{i}_mask.png")
+            image_loss = iou_loss(mask_pred , gt_mask)
+            if myparms.save_image:
+                torchvision.utils.save_image(mask_pred, save_dir / f"{frame.image_name:04d}_{i}_mask.png")
 
         else:
             gaussians._fix_delta_translation()
-            Ll1 = l1_loss(image, gt_image)
-            image_loss = (1.0 - op.lambda_dssim) * Ll1 + op.lambda_dssim * (1.0 - ssim(image, gt_image))
-            # image_loss = weighted_mse_loss(image, gt_image)
+            # Ll1 = l1_loss(image * gt_mask_vis, gt_image * gt_mask_vis)
+            # image_loss = (1.0 - op.lambda_dssim) * Ll1 + op.lambda_dssim * (1.0 - ssim(image * gt_mask_vis, gt_image * gt_mask_vis))
+            # image_loss = weighted_mse_loss(image * gt_mask_vis, gt_image * gt_mask_vis)
+            image_loss = optical_loss(image * gt_mask_vis, gt_image * gt_mask_vis, gt_mask_vis, save_dir / f"{frame.image_name:04d}_{i}_optical.png", myparms.save_image)
 
         image_loss.backward()
 
@@ -114,9 +120,10 @@ def eval(image_id, dataset, op, pipe, load_iteration, myparms, opt, model_points
             gaussians.optimizer.step()
             gaussians.optimizer.zero_grad(set_to_none = True)
             if i == opt.eval_iterations - 1 or i % 10 == 0:
-                # torchvision.utils.save_image(image, save_dir / f"{frame.image_name:04d}_{i}_render.png")
-                # image = PutTheSecondImageOnTheFirstImageWithOpacity(gt_image.cpu().numpy(), image.cpu().numpy(), 128)
-                # image.save(save_dir / f"{frame.image_name:04d}_{i}_combine.png")
+                if myparms.save_image:
+                    torchvision.utils.save_image(image * gt_mask_vis, save_dir / f"{frame.image_name:04d}_{i}_render.png")
+                    image = PutTheSecondImageOnTheFirstImageWithOpacity(gt_image.cpu().numpy(), (image * gt_mask_vis).cpu().numpy(), 128)
+                    image.save(save_dir / f"{frame.image_name:04d}_{i}_combine.png")
 
                 delta_rotation, delta_translation = gaussians.get_delta_rotation, gaussians.get_delta_translation
                 delta_rotation = quaternion_to_matrix(delta_rotation)[0]
@@ -171,8 +178,8 @@ if __name__ == "__main__":
     with open("temp_datasets/ycbv/image_lists/test.txt") as file: #! hard code
         lines = file.readlines()
     total_length = len([line.strip() for line in lines if line.startswith(sequence_number)])
-    for item_number in range(total_length):
-    # for item_number in [0]:
+    # for item_number in range(total_length):
+    for item_number in [0]:
         print(f"process {item_number}/{total_length}")
         eval(item_number, datasets, op.extract(args), pp.extract(args), args.load_iteration, mp.extract(args), opt.extract(args), model_points, diameter, K, sequence_number)
 

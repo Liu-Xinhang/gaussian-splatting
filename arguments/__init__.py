@@ -80,7 +80,7 @@ class MyParams(ParamGroup):
         self.track_densification_interval = 100
 
         ## other
-        self.save_image = False
+        self.save_image = True
 
         ## boptrain
         self.category_type=["real"]

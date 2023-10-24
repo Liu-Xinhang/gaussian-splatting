@@ -89,10 +89,12 @@ class YCBVFrame:
         uid = image_name
 
         image = Image.open(image_path)
-        mask = np.array(Image.open(YCBVFrame.root_path / "mask_visib" / f"{image_name:06d}_{item_number:06d}.png"))
-        mask = mask == 255
-        image = remove_background_by_mask(image, mask)
+        mask_vis = np.array(Image.open(YCBVFrame.root_path / "mask_visib" / f"{image_name:06d}_{item_number:06d}.png"))
+        mask_vis = mask_vis == 255
+        image = remove_background_by_mask(image, mask_vis)
+        mask_vis = torch.from_numpy(mask_vis).float()
         mask = np.array(Image.open(YCBVFrame.root_path / "mask" / f"{image_name:06d}_{item_number:06d}.png"))
+        mask = mask == 255
         mask = torch.from_numpy(mask).float()
 
         width , height = image.size
@@ -103,7 +105,7 @@ class YCBVFrame:
         FovX = focal2fov(focal_length_x, width)
         
         cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image, ## 这里图像已经加载进来了
-                              image_path=image_path, image_name=image_name, width=width, height=height, mask=mask)
+                              image_path=image_path, image_name=image_name, width=width, height=height, mask=mask, mask_vis=mask_vis)
         return cam_info
     
     def transform(self, resolution, rotation=None, translation=None):

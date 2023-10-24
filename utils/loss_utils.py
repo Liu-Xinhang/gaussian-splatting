@@ -10,9 +10,14 @@
 #
 
 import torch
+import cv2
 import torch.nn.functional as F
 from torch.autograd import Variable
+from raft.utils import flow_viz
 from math import exp
+import argparse
+import numpy as np
+from raft.raft import RAFT
 
 def l1_loss(network_output, gt):
     return torch.abs((network_output - gt)).mean()
@@ -196,3 +201,59 @@ class S3IM(torch.nn.Module):
         src_patch = src_all.permute(1, 0).reshape(1, 3, self.patch_height, self.patch_width * self.repeat_time)
         loss = (1 - self.ssim_loss(src_patch, tar_patch))
         return loss
+    
+class Optical_loss(torch.nn.Module):
+    def __init__(self) -> None:
+        super(Optical_loss, self).__init__()
+        self.args = self.get_args_from_dict({
+            "model": "raft/trained_model/raft-things.pth",
+            "small": False,
+            "mixed_precision": False,
+            "alternate_corr": False
+        })
+        self.model = torch.nn.DataParallel(RAFT(self.args))
+        self.model.load_state_dict(torch.load(self.args.model))
+
+        self.model = self.model.module
+        self.model.cuda()
+        # self.model.eval()
+
+    def forward(self, image1, image2, gt_mask_vis, save_path, save_fig=False):
+        image1, image2 = image1.unsqueeze(0)*255, image2.unsqueeze(0)*255
+        flow_low, flow_up = self.model(image1, image2, iters=20, test_mode=True)
+        flow_up = flow_up * gt_mask_vis
+        if save_fig:
+            self.viz(image1, flow_up, str(save_path))
+        return torch.square(flow_up).mean()
+    
+    @staticmethod
+    def viz(img, flo, save_path):
+        img = img[0].detach().permute(1,2,0).cpu().numpy()
+        flo = flo[0].detach().permute(1,2,0).cpu().numpy()
+        
+        # map flow to rgb image
+        flo = flow_viz.flow_to_image(flo)
+        img_flo = np.concatenate([img, flo], axis=0)
+
+        cv2.imwrite(save_path, img_flo[:, :, [2,1,0]].astype(np.uint8))
+    
+    @staticmethod
+    def get_args_from_dict(data_dict):
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--model', default="raft/trained_model/raft-things.pth", help="restore checkpoint")
+        parser.add_argument('--path', default="raft/demo-frames", help="dataset for evaluation")
+        parser.add_argument('--small', default=False, action='store_true', help='use small model')
+        parser.add_argument('--mixed_precision', action='store_true', help='use mixed precision')
+        parser.add_argument('--alternate_corr', action='store_true', help='use efficent correlation implementation')
+
+        # Construct a mock list of arguments from the dictionary
+        mock_argv = []
+        for key, value in data_dict.items():
+            if isinstance(value, bool):
+                if value:
+                    mock_argv.append("--"+key)
+            else:
+                mock_argv.extend(["--"+key, str(value)])
+        
+        # Parse the mock list of arguments
+        return parser.parse_args(mock_argv)
